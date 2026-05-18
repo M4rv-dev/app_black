@@ -132,7 +132,7 @@ class Oled:
         # Initialize I2C display (reuse early device if provided)
         if device is not None:
             self._device = device
-            _LOGGER.debug("OLED display reusing early-initialized device")
+            _LOGGER.info("OLED display reusing early-initialized sh1106 device")
         else:
             # SH1106 init sends ~30 commands over i2c — on a contended bus
             # (other drivers booting in parallel: LM75, INA219, MCP23017)
@@ -141,15 +141,20 @@ class Oled:
             # at 100% success rate post-boot), so a short retry with backoff
             # is enough to ride out the boot-time contention without crashing
             # the DisplayManager.
+            # Total ramp here is ~14s (0.2 + 0.4 + 0.6 + ... + 2.0 = 11s plus
+            # the time spent in the failed sh1106(serial) sequence itself).
+            # Cold-boot i2c bus on the BBB+capes is genuinely unstable for
+            # several seconds while parallel drivers (LM75, INA219, MCP23017)
+            # finish their own probes — anything shorter loses the race.
             last_err: Exception | None = None
-            for attempt in range(5):
+            for attempt in range(10):
                 try:
                     serial = i2c(port=2, address=0x3C)
                     self._device = sh1106(serial)
                     if attempt > 0:
                         _LOGGER.info("OLED display initialized after %d retries", attempt)
                     else:
-                        _LOGGER.debug("OLED display initialized successfully")
+                        _LOGGER.info("OLED display initialized successfully")
                     break
                 except (DeviceNotFoundError, OSError) as err:
                     last_err = err
@@ -157,9 +162,10 @@ class Oled:
                         "OLED init attempt %d failed (%s), retrying...",
                         attempt + 1, err,
                     )
-                    time.sleep(0.2 * (attempt + 1))  # 200, 400, 600, 800 ms
+                    # Linear ramp 200ms → 2000ms (cap so we don't sleep forever).
+                    time.sleep(min(0.2 * (attempt + 1), 2.0))
             else:
-                raise I2CError(f"OLED display not found after 5 attempts: {last_err}") from last_err
+                raise I2CError(f"OLED display not found after 10 attempts: {last_err}") from last_err
 
         # Re-entrant lock guards every `canvas(self._device)` write — luma
         # opens its own SMBus handle that doesn't share the app's i2c bus lock,
@@ -570,6 +576,19 @@ class Oled:
         except Exception as e:
             _LOGGER.error("Error shutting down device: %s", e)
             self.render_display()
+
+    def clear_display(self) -> None:
+        """Wipe the SH1106 framebuffer to black.
+
+        Called once during handoff from early_oled — any leftover splash from
+        the boot screen would otherwise stay behind the first DisplayManager
+        paint and look like overlapping text. Uses the same lock as draws.
+        """
+        with self._draw_lock:
+            try:
+                self._device.clear()
+            except OSError as exc:
+                _LOGGER.warning("OLED clear failed (%s) — first paint will overwrite", exc)
 
     def render_display(self) -> None:
         """Render display - main method that decides what to display."""

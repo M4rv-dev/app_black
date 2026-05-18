@@ -201,9 +201,22 @@ class DisplayManager:
             # not a write, so it's safe to call before the first paint.
             from boneio.hardware.display.early_oled import handoff
             handoff()
-            self._oled.render_display()
 
-            _LOGGER.info("OLED display configured successfully")
+            # First paint can transiently fail on a busy i2c bus while other
+            # drivers are still settling (LM75, INA219, MCP23017 all initialise
+            # in parallel). Don't let that kill the whole DisplayManager — the
+            # periodic refresh in Oled._update_display has its own retry path
+            # and will repaint shortly. Use a clear-then-paint sequence so the
+            # previous early_oled splash doesn't bleed into the first frame.
+            try:
+                self._oled.clear_display()
+                self._oled.render_display()
+                _LOGGER.info("OLED display configured successfully")
+            except OSError as draw_err:
+                _LOGGER.warning(
+                    "OLED first paint failed (%s) — periodic refresh will retry shortly",
+                    draw_err,
+                )
             
         except (GPIOInputException, I2CError) as err:
             _LOGGER.error("Can't configure OLED display: %s", err)
