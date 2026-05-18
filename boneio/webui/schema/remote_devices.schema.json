@@ -77,6 +77,86 @@
                       "type": "string",
                       "description": "Output Name (for UI)",
                       "title": "Name"
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "Command topic (generic_mqtt)",
+                      "title": "Topic"
+                    },
+                    "command_template": {
+                      "type": "string",
+                      "description": "Jinja2 command_template (generic_mqtt)",
+                      "title": "Command template"
+                    },
+                    "state_topic": {
+                      "type": "string",
+                      "description": "State topic (generic_mqtt, optional feedback)",
+                      "title": "State topic"
+                    },
+                    "state_value_template": {
+                      "type": "string",
+                      "description": "state_value_template (generic_mqtt)",
+                      "title": "State value template"
+                    },
+                    "state_payload_on": {
+                      "type": "string",
+                      "description": "state_payload_on",
+                      "title": "State payload on"
+                    },
+                    "state_payload_off": {
+                      "type": "string",
+                      "description": "state_payload_off",
+                      "title": "State payload off"
+                    },
+                    "qos": {
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "enum": [
+                        0,
+                        1,
+                        2
+                      ],
+                      "examples": [
+                        0
+                      ],
+                      "description": "QoS",
+                      "title": "Qos"
+                    },
+                    "retain": {
+                      "oneOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "yes",
+                            "no",
+                            "true",
+                            "false",
+                            "on",
+                            "off"
+                          ],
+                          "x-yaml-boolean": true
+                        }
+                      ],
+                      "description": "Retain",
+                      "title": "Retain"
+                    },
+                    "output_type": {
+                      "type": "string",
+                      "enum": [
+                        "switch",
+                        "light",
+                        "valve"
+                      ],
+                      "examples": [
+                        "switch"
+                      ],
+                      "description": "Output Type (HA category)",
+                      "title": "Output type"
                     }
                   },
                   "required": [
@@ -114,6 +194,154 @@
                 },
                 "description": "Available Covers",
                 "title": "Covers"
+              },
+              "topic_prefix": {
+                "type": "string",
+                "description": "Topic prefix",
+                "title": "Topic prefix"
+              },
+              "inputs": {
+                "type": [
+                  "array",
+                  "string"
+                ],
+                "items": {
+                  "type": [
+                    "object",
+                    "string"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Input ID",
+                      "title": "Id"
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Input Name (for UI)",
+                      "title": "Name"
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "MQTT Topic (generic_mqtt)",
+                      "title": "Topic"
+                    },
+                    "value_template": {
+                      "type": "string",
+                      "description": "Jinja2 value_template (generic_mqtt)",
+                      "title": "Value template"
+                    },
+                    "payload_on": {
+                      "type": "string",
+                      "description": "payload_on",
+                      "title": "Payload on"
+                    },
+                    "payload_off": {
+                      "type": "string",
+                      "description": "payload_off",
+                      "title": "Payload off"
+                    },
+                    "qos": {
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "enum": [
+                        0,
+                        1,
+                        2
+                      ],
+                      "examples": [
+                        0
+                      ],
+                      "description": "QoS",
+                      "title": "Qos"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "description": "Available Inputs",
+                "title": "Inputs"
+              },
+              "sensors": {
+                "type": [
+                  "array",
+                  "string"
+                ],
+                "items": {
+                  "type": [
+                    "object",
+                    "string"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Sensor ID",
+                      "title": "Id"
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Sensor Name (for UI)",
+                      "title": "Name"
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "MQTT Topic (generic_mqtt)",
+                      "title": "Topic"
+                    },
+                    "value_template": {
+                      "type": "string",
+                      "description": "Jinja2 value_template (generic_mqtt)",
+                      "title": "Value template"
+                    },
+                    "unit_of_measurement": {
+                      "type": "string",
+                      "description": "Unit (e.g. \u00b0C, %, W, V)",
+                      "title": "Unit of measurement"
+                    },
+                    "device_class": {
+                      "type": "string",
+                      "description": "HA device_class",
+                      "title": "Device class"
+                    },
+                    "state_class": {
+                      "type": "string",
+                      "enum": [
+                        "measurement",
+                        "total",
+                        "total_increasing"
+                      ],
+                      "examples": [
+                        "measurement"
+                      ],
+                      "description": "HA state_class",
+                      "title": "State class"
+                    },
+                    "qos": {
+                      "type": [
+                        "integer",
+                        "string"
+                      ],
+                      "enum": [
+                        0,
+                        1,
+                        2
+                      ],
+                      "examples": [
+                        0
+                      ],
+                      "description": "QoS",
+                      "title": "Qos"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "description": "Available Sensors",
+                "title": "Sensors"
               }
             },
             "description": "MQTT Protocol Settings",
@@ -401,7 +629,6 @@
                           "x-yaml-boolean": true
                         }
                       ],
-                      "default": false,
                       "description": "Supports Tilt",
                       "title": "Supports tilt"
                     }

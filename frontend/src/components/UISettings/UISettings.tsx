@@ -688,6 +688,7 @@ export default function UISettings() {
       'virtual_energy_sensor',
       'remote_devices',
       'remote_outputs',
+      'remote_sensors',
       'board_sensors',
     ];
     const defaultValue = arraySections.includes(sectionName) ? [] : {};
@@ -949,6 +950,7 @@ export default function UISettings() {
           'remote_devices',
           'remote_inputs',
           'remote_outputs',
+          'remote_sensors',
           'template',
           'oled',
         ];

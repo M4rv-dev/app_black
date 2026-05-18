@@ -116,10 +116,23 @@ body {
   body {
     @apply bg-base-100 text-base-content;
   }
-  
+
   :root {
     /* DaisyUI-compatible border color for shadcn components */
     --input-border: color-mix(in oklab, var(--color-base-content) 20%, #0000);
+
+    /* shadcn → DaisyUI variable bridge.
+       shadcn/ui components reference CSS variables like `--background`,
+       `--foreground`, `--muted-foreground` etc. via Tailwind utilities
+       (`bg-background`, `text-muted-foreground`). Without this mapping the
+       utilities resolve to transparent and stacked dialogs become invisible.
+       Map them to DaisyUI tokens so shadcn components inherit theme colors. */
+    --background: var(--color-base-100);
+    --foreground: var(--color-base-content);
+    --muted-foreground: color-mix(in oklab, var(--color-base-content) 60%, transparent);
+    --accent: var(--color-base-300);
+    --ring: var(--color-primary);
+    --border: color-mix(in oklab, var(--color-base-content) 18%, transparent);
 
     /* LogViewer log level text colors */
     --log-error: #b91c1c;       /* red-700 */
@@ -144,6 +157,15 @@ body {
   .dark,
   [data-theme="dark"] {
     --input-border: color-mix(in oklab, var(--color-base-content) 20%, #0000);
+
+    /* Dark theme overrides for shadcn → DaisyUI bridge — same shape, recomputed
+       against dark base-content. */
+    --background: var(--color-base-100);
+    --foreground: var(--color-base-content);
+    --muted-foreground: color-mix(in oklab, var(--color-base-content) 60%, transparent);
+    --accent: var(--color-base-300);
+    --ring: var(--color-primary);
+    --border: color-mix(in oklab, var(--color-base-content) 18%, transparent);
 
     /* LogViewer log level text colors */
     --log-error: #fca5a5;       /* red-300 */
@@ -184,6 +206,32 @@ body {
 .select,
 textarea.textarea {
   background-color: var(--color-base-100);
+}
+
+/* shadcn Dialog uses `bg-background` (a CSS variable utility) which doesn't
+   reliably resolve under Tailwind v4 + DaisyUI without `@theme` setup. Force
+   solid DaisyUI base-100 on every dialog content panel so stacked dialogs
+   (modal-on-modal) don't show through to the parent. */
+[data-slot="dialog-content"] {
+  background-color: var(--color-base-100) !important;
+}
+[data-slot="dialog-overlay"] {
+  /* Make the second overlay slightly stronger so the boundary between
+     stacked dialogs is visually obvious. */
+  background-color: rgb(0 0 0 / 0.55) !important;
+}
+
+/* Placeholders should look distinctly "ghosty" — italic + much lighter
+   than real values — so the user can tell at a glance whether a field has
+   been filled in or still shows a hint. */
+.input::placeholder,
+.select::placeholder,
+textarea.textarea::placeholder,
+input::placeholder,
+textarea::placeholder {
+  color: color-mix(in oklab, var(--color-base-content) 50%, transparent);
+  font-style: italic;
+  opacity: 1; /* normalise across browsers */
 }
 
 .modbus-sparkline,

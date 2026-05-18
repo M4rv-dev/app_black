@@ -26,12 +26,68 @@ _SCHEMA_CACHE = None
 _BOARD_CONFIG_CACHE = {}
 
 
+def _deep_merge_schema(target: dict, source: dict) -> dict:
+    """Recursively merge ``source`` into ``target``.
+
+    Dicts merge by key; everything else is overwritten by the source value.
+    Lists are replaced wholesale (not concatenated) — this matches Cerberus
+    schema semantics where a list is itself a typed leaf.
+    """
+    for k, v in source.items():
+        if k in target and isinstance(target[k], dict) and isinstance(v, dict):
+            _deep_merge_schema(target[k], v)
+        else:
+            target[k] = v
+    return target
+
+
+def _apply_module_schema_extensions(schema: dict) -> dict:
+    """Walk ``boneio/modules/*`` and merge each module's ``schema_extension.yaml``.
+
+    Each module can declare a YAML file at its root that mirrors the shape
+    of the main schema. The file's content is deep-merged into the loaded
+    schema dict at startup, allowing a module to:
+
+    * Add a brand-new top-level section (e.g. ``remote_sensors: !include …``).
+    * Extend a nested field of an existing section (e.g. add a ``mqtt`` dict
+      under ``remote_devices.schema.schema``).
+
+    This keeps schema isolation per-module — upstream YAML files don't carry
+    any module-specific fields, so future upstream merges have zero schema
+    conflicts. Mirrors the pattern used by ``boneio/modules/expander/``.
+    """
+    import glob
+
+    modules_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "modules"))
+    pattern = os.path.join(modules_dir, "*", "schema_extension.yaml")
+    for ext_file in sorted(glob.glob(pattern)):
+        module_name = os.path.basename(os.path.dirname(ext_file))
+        try:
+            ext = load_yaml_file(ext_file)
+            if isinstance(ext, dict):
+                _deep_merge_schema(schema, ext)
+                _LOGGER.info("Schema: applied extension from modules/%s", module_name)
+            else:
+                _LOGGER.warning(
+                    "Schema extension in modules/%s ignored — top-level is not a dict",
+                    module_name,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error("Schema: failed to load extension from modules/%s: %s", module_name, exc)
+    return schema
+
+
 def _get_schema():
-    """Get schema from cache or load it if not cached."""
+    """Get schema from cache or load it if not cached.
+
+    On first load: parses ``schema.yaml`` then applies any module-provided
+    extensions (``boneio/modules/*/schema_extension.yaml``) before caching.
+    """
     global _SCHEMA_CACHE
     if _SCHEMA_CACHE is None:
         _LOGGER.debug("Loading schema from file (first time)")
-        _SCHEMA_CACHE = load_yaml_file(schema_file)
+        schema = load_yaml_file(schema_file)
+        _SCHEMA_CACHE = _apply_module_schema_extensions(schema)
     return _SCHEMA_CACHE
 
 

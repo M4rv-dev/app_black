@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "remote_sensors": {
+      "type": [
+        "array",
+        "string"
+      ],
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Sensor ID",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "description": "Display Name",
+            "title": "Name"
+          },
+          "remote_source": {
+            "type": "string",
+            "enum": [
+              "mqtt"
+            ],
+            "examples": [
+              "mqtt"
+            ],
+            "description": "Remote Source Protocol",
+            "title": "Remote source"
+          },
+          "device_id": {
+            "type": "string",
+            "description": "Remote Device ID",
+            "title": "Device id"
+          },
+          "sensor_id": {
+            "type": "string",
+            "description": "Sensor ID on device",
+            "title": "Sensor id"
+          },
+          "show_in_ha": {
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "yes",
+                  "no",
+                  "true",
+                  "false",
+                  "on",
+                  "off"
+                ],
+                "x-yaml-boolean": true
+              }
+            ],
+            "default": false,
+            "description": "Forward to Home Assistant",
+            "title": "Show in ha"
+          },
+          "area": {
+            "type": "string",
+            "description": "Area (for HA)",
+            "title": "Area"
+          },
+          "device_class": {
+            "type": "string",
+            "description": "Override device_class (for HA)",
+            "title": "Device class"
+          },
+          "unit_of_measurement": {
+            "type": "string",
+            "description": "Override unit",
+            "title": "Unit of measurement"
+          },
+          "state_class": {
+            "type": "string",
+            "enum": [
+              "measurement",
+              "total",
+              "total_increasing"
+            ],
+            "examples": [
+              "measurement"
+            ],
+            "description": "Override state_class",
+            "title": "State class"
+          }
+        },
+        "required": [
+          "remote_source",
+          "device_id",
+          "sensor_id"
+        ]
+      },
+      "description": "Remote numeric/string sensors from MQTT (and future protocols).",
+      "title": "Remote sensors"
+    }
+  }
+}

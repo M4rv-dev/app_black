@@ -3,20 +3,25 @@
  * MQTT remote device (mirrors how ESPHome devices declare their
  * binary_sensors/switches/lights catalog).
  *
- * Renders two editable tables (Inputs + Outputs) plus a "Scan & import"
- * workflow that opens the scanner with the device's topic_prefix and
- * imports selected topics as inputs (auto-classified by payload type).
+ * Renders three editable tables (Inputs / Outputs / Sensors). Each section
+ * has its own "Scan broker…" button — they share one dialog (cached scan
+ * results per topic_prefix) so the second click on a different section
+ * reuses what was already discovered. The import handler dispatches to the
+ * section the user opened the scan from, with auto-templates tuned per
+ * section (binary on/off for inputs, command_template for outputs, value
+ * extraction for sensors).
  *
  * All state is owned by the parent (RemoteDeviceForm). This component
- * is pure Presentational — value/onChange pattern, swappable.
+ * is pure presentational — value/onChange pattern, swappable.
  */
-import React, { useState } from 'react';
-import { FaPlus, FaTrash, FaSearch, FaDownload } from 'react-icons/fa';
+import React, { useMemo, useState } from 'react';
+import { FaPlus, FaTrash, FaSearch } from 'react-icons/fa';
 import { useTranslation } from '@/hooks/useTranslation';
 
 import { useMqttScan } from '../hooks/useMqttScan';
 import { isValidPublicationTopic } from '../helpers/topicValidation';
-import type { ScanResult, PayloadType } from '../types/scan';
+import type { ScanResult } from '../types/scan';
+import MqttTopicTree, { type ImportSection } from './MqttTopicTree';
 import {
   Dialog,
   DialogContent,
@@ -49,10 +54,21 @@ export interface MqttDeviceOutputRow {
   output_type?: 'switch' | 'light' | 'valve';
 }
 
+export interface MqttDeviceSensorRow {
+  id: string;
+  name?: string;
+  topic?: string;
+  value_template?: string;
+  unit_of_measurement?: string;
+  device_class?: string;
+  state_class?: 'measurement' | 'total' | 'total_increasing';
+}
+
 export interface MqttDeviceConfig {
   topic_prefix?: string;
   inputs?: MqttDeviceInputRow[];
   outputs?: MqttDeviceOutputRow[];
+  sensors?: MqttDeviceSensorRow[];
 }
 
 export interface MqttDeviceEntitiesEditorProps {
@@ -60,24 +76,31 @@ export interface MqttDeviceEntitiesEditorProps {
   onChange: (next: MqttDeviceConfig) => void;
 }
 
-const TYPE_BADGE_CLASS: Record<PayloadType, string> = {
-  json:    'badge-info',
-  binary:  'badge-success',
-  numeric: 'badge-warning',
-  string:  'badge-ghost',
-  empty:   'badge-neutral',
-};
+type Section = 'inputs' | 'outputs' | 'sensors';
 
 /** Derive a sensible value_template + payload_on/off from the scanner classifier. */
-function autoTemplateFor(result: ScanResult): { value_template: string; payload_on?: string; payload_off?: string } {
+function autoInputTemplate(result: ScanResult): Pick<MqttDeviceInputRow, 'value_template' | 'payload_on' | 'payload_off'> {
   if (result.payload_type === 'binary') {
     return { value_template: '{{ value }}', payload_on: '1', payload_off: '0' };
   }
   if (result.payload_type === 'json') {
-    // Default to whole JSON (user edits to pick a path)
     return { value_template: '{{ value_json }}' };
   }
   return { value_template: '{{ value }}' };
+}
+
+/** Derive a sensible value_template for numeric sensors. */
+function autoSensorTemplate(result: ScanResult): Pick<MqttDeviceSensorRow, 'value_template'> {
+  if (result.payload_type === 'json') {
+    // Most JSON sensors have a `val` or `value` field. Default to `val` — easy edit.
+    return { value_template: '{{ value_json.val }}' };
+  }
+  return { value_template: '{{ value }}' };
+}
+
+/** Derive defaults for an output row imported from a topic. */
+function autoOutputDefaults(_result: ScanResult): Pick<MqttDeviceOutputRow, 'command_template' | 'output_type'> {
+  return { command_template: '{{ state }}', output_type: 'switch' };
 }
 
 /** Derive a short id slug from a topic — the last segment, sanitised. */
@@ -89,20 +112,35 @@ function idFromTopic(topic: string): string {
 const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ value, onChange }) => {
   const { t } = useTranslation();
   const [scanOpen, setScanOpen] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Remember which pattern the cached results were scanned for. If user changes
+  // topic_prefix, re-scan; otherwise re-open just reuses cached results.
+  const [cachedPrefix, setCachedPrefix] = useState<string | null>(null);
   const scan = useMqttScan();
 
   const inputs = value.inputs || [];
   const outputs = value.outputs || [];
+  const sensors = value.sensors || [];
   const prefix = value.topic_prefix || '';
 
-  // Build a set of all entity IDs and flag the duplicates (UI warning per row).
-  const idCounts = new Map<string, number>();
-  for (const it of [...inputs, ...outputs]) {
-    if (!it.id) continue;
-    idCounts.set(it.id, (idCounts.get(it.id) || 0) + 1);
-  }
+  // Build a set of all entity IDs across all sections and flag duplicates.
+  const idCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const it of [...inputs, ...outputs, ...sensors]) {
+      if (!it.id) continue;
+      counts.set(it.id, (counts.get(it.id) || 0) + 1);
+    }
+    return counts;
+  }, [inputs, outputs, sensors]);
   const isDuplicateId = (id: string) => !!id && (idCounts.get(id) || 0) > 1;
+
+  // Map topic -> the section it's currently used in (for the scan dialog badge).
+  const topicUsage = useMemo(() => {
+    const m = new Map<string, Section>();
+    for (const it of inputs) if (it.topic) m.set(it.topic, 'inputs');
+    for (const it of outputs) if (it.topic) m.set(it.topic, 'outputs');
+    for (const it of sensors) if (it.topic) m.set(it.topic, 'sensors');
+    return m;
+  }, [inputs, outputs, sensors]);
 
   // --- Inputs editing ---
   const addInput = () => onChange({
@@ -124,84 +162,114 @@ const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ val
   const removeOutput = (idx: number) =>
     onChange({ ...value, outputs: outputs.filter((_, i) => i !== idx) });
 
-  // --- Scan workflow ---
-  const openScan = () => {
-    setSelected(new Set());
+  // --- Sensors editing ---
+  const addSensor = () => onChange({
+    ...value,
+    sensors: [...sensors, { id: `sensor_${sensors.length + 1}`, topic: prefix ? `${prefix}/` : '' }],
+  });
+  const updateSensor = (idx: number, patch: Partial<MqttDeviceSensorRow>) =>
+    onChange({ ...value, sensors: sensors.map((it, i) => i === idx ? { ...it, ...patch } : it) });
+  const removeSensor = (idx: number) =>
+    onChange({ ...value, sensors: sensors.filter((_, i) => i !== idx) });
+
+  // --- Scan / browse workflow ---
+  // No prefix → scan the whole broker (`#`). With prefix → scope to it (`<prefix>/#`).
+  // Either way, results are cached for the lifetime of the dialog so accordion
+  // exploration doesn't trigger re-scans.
+  const scanPattern = prefix ? `${prefix}/#` : '#';
+  const openScan = (_target?: Section) => {
     setScanOpen(true);
-    if (prefix) {
-      // Pre-fill pattern and auto-run scan
-      void scan.scan({ pattern: `${prefix}/#`, duration_s: 5 });
+    const needsScan = cachedPrefix !== scanPattern || scan.results.length === 0;
+    if (needsScan) {
+      setCachedPrefix(scanPattern);
+      void scan.scan({ pattern: scanPattern, duration_s: 5 });
     }
   };
-  const toggleSelected = (topic: string) => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      if (next.has(topic)) next.delete(topic);
-      else next.add(topic);
-      return next;
-    });
+  const rescan = () => {
+    setCachedPrefix(scanPattern);
+    void scan.scan({ pattern: scanPattern, duration_s: 5 });
   };
-  const selectAll = () => setSelected(new Set(scan.results.map(r => r.topic)));
-  const selectNone = () => setSelected(new Set());
-  const importSelected = () => {
-    const existingTopics = new Set(inputs.map(i => i.topic).filter(Boolean));
-    const newRows: MqttDeviceInputRow[] = scan.results
-      .filter(r => selected.has(r.topic) && !existingTopics.has(r.topic))
-      .map(r => {
-        const baseId = idFromTopic(r.topic);
-        // Ensure unique id within the device
-        let id = baseId;
-        let n = 2;
-        const allIds = new Set([...inputs.map(i => i.id), ...outputs.map(o => o.id)]);
-        while (allIds.has(id)) { id = `${baseId}_${n++}`; }
-        const auto = autoTemplateFor(r);
-        return { id, name: r.topic, topic: r.topic, ...auto };
-      });
-    if (newRows.length > 0) {
-      onChange({ ...value, inputs: [...inputs, ...newRows] });
+  /** One-shot import of a single topic into the chosen section (from the tree). */
+  const importLeaf = (topic: string, result: ScanResult, section: ImportSection) => {
+    const allIds = new Set([...inputs.map(i => i.id), ...outputs.map(o => o.id), ...sensors.map(s => s.id)]);
+    const uniqId = (base: string): string => {
+      let id = base; let n = 2;
+      while (allIds.has(id)) { id = `${base}_${n++}`; }
+      return id;
+    };
+    if (section === 'inputs') {
+      if (inputs.some(i => i.topic === topic)) return;
+      const row: MqttDeviceInputRow = {
+        id: uniqId(idFromTopic(topic)), name: topic, topic, ...autoInputTemplate(result),
+      };
+      onChange({ ...value, inputs: [...inputs, row] });
+    } else if (section === 'outputs') {
+      if (outputs.some(o => o.topic === topic)) return;
+      const row: MqttDeviceOutputRow = {
+        id: uniqId(idFromTopic(topic)), name: topic, topic, ...autoOutputDefaults(result),
+      };
+      onChange({ ...value, outputs: [...outputs, row] });
+    } else {
+      if (sensors.some(s => s.topic === topic)) return;
+      const row: MqttDeviceSensorRow = {
+        id: uniqId(idFromTopic(topic)), name: topic, topic, ...autoSensorTemplate(result),
+      };
+      onChange({ ...value, sensors: [...sensors, row] });
     }
+  };
+
+  /** From tree: user picked a branch → become this device's topic_prefix. */
+  const usePrefixFromTree = (path: string) => {
+    onChange({ ...value, topic_prefix: path });
     setScanOpen(false);
+  };
+
+  const sectionLabel: Record<Section, string> = {
+    inputs:  t('remote_mqtt.section_inputs') || 'Inputs',
+    outputs: t('remote_mqtt.section_outputs') || 'Outputs',
+    sensors: t('remote_mqtt.section_sensors') || 'Sensors',
   };
 
   return (
     <div className="space-y-4">
-      {/* Topic prefix + scan button */}
-      <div className="flex items-end gap-2">
-        <div className="form-control flex-1">
-          <label className="label py-1">
-            <span className="label-text font-medium">
-              {t('remote_mqtt.field_topic_prefix') || 'Topic prefix (optional)'}
-            </span>
-          </label>
-          <input
-            type="text"
-            className="input input-bordered input-sm font-mono"
-            value={prefix}
-            onChange={e => onChange({ ...value, topic_prefix: e.target.value || undefined })}
-            placeholder="n64/88"
-          />
-          <span className="label-text-alt text-xs text-base-content/60">
-            {t('remote_mqtt.topic_prefix_hint') ||
-              'Used to scope the Scan & import dialog. Per-entity topics still stored individually below.'}
-          </span>
+      {/* Topic prefix + global "browse broker" entry point */}
+      <div className="space-y-1">
+        <div className="flex items-end gap-2">
+          <div className="form-control flex-1">
+            <label className="label py-1">
+              <span className="label-text font-medium">
+                {t('remote_mqtt.field_topic_prefix') || 'Topic prefix'}
+              </span>
+            </label>
+            <input
+              type="text"
+              className="input input-bordered input-sm font-mono"
+              value={prefix}
+              onChange={e => onChange({ ...value, topic_prefix: e.target.value || undefined })}
+              placeholder="e.g. n64/88"
+            />
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => openScan('inputs')}
+            title={t('remote_mqtt.browse_broker_hint') || 'Discover devices and topics live on your MQTT broker'}
+          >
+            <FaSearch className="mr-1" />
+            {t('remote_mqtt.browse_broker') || 'Browse MQTT broker…'}
+          </button>
         </div>
-        <button
-          type="button"
-          className="btn btn-primary btn-sm"
-          onClick={openScan}
-          disabled={!prefix}
-          title={!prefix ? (t('remote_mqtt.topic_prefix_required') || 'Set a topic prefix first') : undefined}
-        >
-          <FaSearch className="mr-1" />
-          {t('remote_mqtt.scan_and_import') || 'Scan & import'}
-        </button>
+        <span className="label-text-alt text-xs text-base-content/60">
+          {t('remote_mqtt.topic_prefix_hint') ||
+            'Common prefix of all topics for this device (e.g. n64/88). Per-entity topics are stored individually below.'}
+        </span>
       </div>
 
       {/* Inputs table */}
       <div className="collapse collapse-arrow bg-base-200">
         <input type="checkbox" defaultChecked />
         <div className="collapse-title font-medium text-sm">
-          {t('remote_mqtt.section_inputs') || 'Inputs'}
+          {sectionLabel.inputs}
           <span className="badge badge-sm ml-2">{inputs.length}</span>
         </div>
         <div className="collapse-content">
@@ -294,9 +362,11 @@ const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ val
               </table>
             </div>
           )}
-          <button type="button" className="btn btn-outline btn-xs mt-2" onClick={addInput}>
-            <FaPlus className="mr-1" /> {t('remote_mqtt.add_input') || 'Add input'}
-          </button>
+          <div className="flex gap-2 mt-2">
+            <button type="button" className="btn btn-outline btn-xs" onClick={addInput}>
+              <FaPlus className="mr-1" /> {t('remote_mqtt.add_input') || 'Add input'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -304,7 +374,7 @@ const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ val
       <div className="collapse collapse-arrow bg-base-200">
         <input type="checkbox" />
         <div className="collapse-title font-medium text-sm">
-          {t('remote_mqtt.section_outputs') || 'Outputs'}
+          {sectionLabel.outputs}
           <span className="badge badge-sm ml-2">{outputs.length}</span>
         </div>
         <div className="collapse-content">
@@ -409,20 +479,153 @@ const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ val
               </table>
             </div>
           )}
-          <button type="button" className="btn btn-outline btn-xs mt-2" onClick={addOutput}>
-            <FaPlus className="mr-1" /> {t('remote_mqtt.add_output') || 'Add output'}
-          </button>
+          <div className="flex gap-2 mt-2">
+            <button type="button" className="btn btn-outline btn-xs" onClick={addOutput}>
+              <FaPlus className="mr-1" /> {t('remote_mqtt.add_output') || 'Add output'}
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Scan & import dialog (multi-select) */}
+      {/* Sensors table */}
+      <div className="collapse collapse-arrow bg-base-200">
+        <input type="checkbox" />
+        <div className="collapse-title font-medium text-sm">
+          {sectionLabel.sensors}
+          <span className="badge badge-sm ml-2">{sensors.length}</span>
+        </div>
+        <div className="collapse-content">
+          {sensors.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="table table-xs">
+                <thead>
+                  <tr>
+                    <th>id</th>
+                    <th>name</th>
+                    <th>topic</th>
+                    <th>value_template</th>
+                    <th>unit</th>
+                    <th>device_class</th>
+                    <th>state_class</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sensors.map((it, idx) => {
+                    const dupId = isDuplicateId(it.id);
+                    const topicValid = !it.topic || isValidPublicationTopic(it.topic);
+                    return (
+                      <tr key={idx} className={dupId ? 'bg-error/10' : undefined}>
+                        <td>
+                          <input
+                            type="text"
+                            className={`input input-bordered input-xs w-24 font-mono ${dupId ? 'input-error' : ''}`}
+                            value={it.id}
+                            onChange={e => updateSensor(idx, { id: e.target.value })}
+                            title={dupId ? (t('remote_mqtt.duplicate_id') || 'Duplicate ID — entity IDs must be unique on a device') : undefined}
+                            aria-label={`Sensor ${idx + 1} id`}
+                            aria-invalid={dupId || undefined}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            className="input input-bordered input-xs w-32"
+                            value={it.name || ''}
+                            onChange={e => updateSensor(idx, { name: e.target.value || undefined })}
+                            aria-label={`Sensor ${idx + 1} name`}
+                            placeholder="Friendly name"
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            className={`input input-bordered input-xs w-44 font-mono ${!topicValid ? 'input-error' : ''}`}
+                            value={it.topic || ''}
+                            onChange={e => updateSensor(idx, { topic: e.target.value })}
+                            placeholder="n64/88/temp1"
+                            aria-label={`Sensor ${idx + 1} topic`}
+                            aria-invalid={!topicValid || undefined}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            className="input input-bordered input-xs w-44 font-mono"
+                            value={it.value_template || ''}
+                            onChange={e => updateSensor(idx, { value_template: e.target.value || undefined })}
+                            placeholder="{{ value_json.val }}"
+                            aria-label={`Sensor ${idx + 1} value template`}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            className="input input-bordered input-xs w-20 font-mono"
+                            value={it.unit_of_measurement || ''}
+                            onChange={e => updateSensor(idx, { unit_of_measurement: e.target.value || undefined })}
+                            placeholder="°C"
+                            list="common-units"
+                            aria-label={`Sensor ${idx + 1} unit`}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            className="input input-bordered input-xs w-28"
+                            value={it.device_class || ''}
+                            onChange={e => updateSensor(idx, { device_class: e.target.value || undefined })}
+                            placeholder="temperature"
+                            list="common-device-classes"
+                            aria-label={`Sensor ${idx + 1} device class`}
+                          />
+                        </td>
+                        <td>
+                          <select
+                            className="select select-bordered select-xs"
+                            value={it.state_class || ''}
+                            onChange={e => updateSensor(idx, { state_class: (e.target.value || undefined) as MqttDeviceSensorRow['state_class'] })}
+                          >
+                            <option value="">—</option>
+                            <option value="measurement">measurement</option>
+                            <option value="total">total</option>
+                            <option value="total_increasing">total_increasing</option>
+                          </select>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs text-error"
+                            onClick={() => removeSensor(idx)}
+                          >
+                            <FaTrash />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="flex gap-2 mt-2">
+            <button type="button" className="btn btn-outline btn-xs" onClick={addSensor}>
+              <FaPlus className="mr-1" /> {t('remote_mqtt.add_sensor') || 'Add sensor'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Browse MQTT broker — tree view of topics + per-leaf import buttons */}
       <Dialog open={scanOpen} onOpenChange={setScanOpen}>
-        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col">
+        <DialogContent className="max-w-5xl max-h-[85vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle>{t('remote_mqtt.scan_import_title') || 'Scan broker & import topics'}</DialogTitle>
+            <DialogTitle>
+              {t('remote_mqtt.browse_broker_title') || 'MQTT broker — devices and topics'}
+            </DialogTitle>
             <DialogDescription>
-              {t('remote_mqtt.scan_import_description') ||
-                'Select topics to add as inputs on this device. Templates auto-set from payload type.'}
+              {t('remote_mqtt.browse_broker_description') ||
+                'Click a branch to set it as this device\'s topic prefix, or use the per-topic + buttons to add a single topic as input / output / sensor.'}
             </DialogDescription>
           </DialogHeader>
 
@@ -438,88 +641,62 @@ const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ val
             <div className="alert alert-error py-2 text-sm">{scan.error}</div>
           )}
 
-          {scan.results.length > 0 && (
-            <>
-              <div className="flex items-center justify-between gap-2 my-2">
-                <div className="flex gap-1">
-                  <button type="button" className="btn btn-ghost btn-xs" onClick={selectAll}>
-                    {t('remote_mqtt.select_all') || 'Select all'}
-                  </button>
-                  <button type="button" className="btn btn-ghost btn-xs" onClick={selectNone}>
-                    {t('remote_mqtt.select_none') || 'None'}
-                  </button>
-                </div>
-                <span className="text-xs text-base-content/60">
-                  {selected.size} / {scan.results.length}
-                </span>
-              </div>
-              <div className="overflow-auto border border-base-300 rounded-box flex-1">
-                <table className="table table-zebra table-sm">
-                  <thead className="sticky top-0 bg-base-200">
-                    <tr>
-                      <th>
-                        <input
-                          type="checkbox"
-                          className="checkbox checkbox-xs"
-                          checked={selected.size === scan.results.length && scan.results.length > 0}
-                          onChange={e => e.target.checked ? selectAll() : selectNone()}
-                        />
-                      </th>
-                      <th>{t('remote_mqtt.col_topic') || 'Topic'}</th>
-                      <th>{t('remote_mqtt.col_type') || 'Type'}</th>
-                      <th>{t('remote_mqtt.col_payload') || 'Last payload'}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {scan.results.map(r => (
-                      <tr
-                        key={r.topic}
-                        className="cursor-pointer hover:bg-base-200"
-                        onClick={() => toggleSelected(r.topic)}
-                      >
-                        <td>
-                          <input
-                            type="checkbox"
-                            className="checkbox checkbox-xs"
-                            checked={selected.has(r.topic)}
-                            onChange={() => toggleSelected(r.topic)}
-                            onClick={e => e.stopPropagation()}
-                          />
-                        </td>
-                        <td className="font-mono text-xs break-all">{r.topic}</td>
-                        <td>
-                          <span className={`badge badge-xs ${TYPE_BADGE_CLASS[r.payload_type]}`}>
-                            {r.payload_type}
-                          </span>
-                        </td>
-                        <td className="font-mono text-xs break-all text-base-content/70">
-                          {r.last_payload.slice(0, 60)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
+          {!scan.isScanning && !scan.error && scan.results.length > 0 && (
+            <div className="flex items-center justify-between gap-2 my-1 text-xs text-base-content/60">
+              <span>
+                {(t('remote_mqtt.tree_results_summary') || '{n} topics on `{pattern}`')
+                  .replace('{n}', String(scan.results.length))
+                  .replace('{pattern}', scan.lastPattern ?? '')}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                onClick={rescan}
+                disabled={scan.isScanning}
+              >
+                {t('remote_mqtt.rescan') || 'Re-scan'}
+              </button>
+            </div>
+          )}
+
+          {!scan.isScanning && (
+            <div className="flex-1 overflow-auto min-h-[200px]">
+              <MqttTopicTree
+                results={scan.results}
+                topicUsage={topicUsage as Map<string, ImportSection>}
+                onUsePrefix={usePrefixFromTree}
+                onImportLeaf={importLeaf}
+              />
+            </div>
           )}
 
           <DialogFooter>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => setScanOpen(false)}>
-              {t('common.cancel') || 'Cancel'}
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={importSelected}
-              disabled={selected.size === 0}
-            >
-              <FaDownload className="mr-1" />
-              {(t('remote_mqtt.import_selected') || 'Import {n} as inputs')
-                .replace('{n}', String(selected.size))}
+              {t('common.close') || 'Close'}
             </button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Shared datalists — referenced by `list=` on free-text inputs that benefit
+          from autocomplete (units, device classes). Cheap UX win without the
+          weight of a full Select widget per cell. */}
+      <datalist id="common-units">
+        {[
+          '°C', '°F', 'K', '%', 'W', 'kW', 'Wh', 'kWh', 'V', 'mV', 'A', 'mA',
+          'Hz', 'Pa', 'hPa', 'bar', 'psi', 'mm', 'cm', 'm', 'km',
+          'l', 'ml', 'm³', 'l/min', 'l/h', 'g', 'kg', 'lx', 'dB', 'dBm', 'ppm', 'µg/m³',
+        ].map(u => <option key={u} value={u} />)}
+      </datalist>
+      <datalist id="common-device-classes">
+        {[
+          'temperature', 'humidity', 'pressure', 'illuminance', 'power', 'energy',
+          'current', 'voltage', 'frequency', 'gas', 'water', 'battery',
+          'signal_strength', 'pm25', 'pm10', 'carbon_dioxide', 'carbon_monoxide',
+          'moisture', 'distance', 'speed', 'wind_speed', 'volume', 'weight',
+          'duration', 'timestamp', 'date',
+        ].map(c => <option key={c} value={c} />)}
+      </datalist>
     </div>
   );
 };

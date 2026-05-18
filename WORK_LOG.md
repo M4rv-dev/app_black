@@ -105,6 +105,118 @@ pattern eliminates that.
 
 ## Timeline
 
+### 2026-05-18 — Session 3 (remote MQTT sensors + module isolation refactor)
+
+**Goal**: add generic MQTT sensor support end-to-end, then refactor the whole
+remote_mqtt stack so it lives entirely inside `boneio/modules/remote_mqtt/`
+with ≤ ~25 lines of injection in upstream files — same isolation level as
+the expander module.
+
+**Done — feature**:
+* `MQTTGenericSensor` class + factory (subscribe → render Jinja2 → coerce to
+  float/str → publish to local boneIO sensor topic → emit `SensorEvent`).
+* New top-level config section `remote_sensors:` referenced by `device_id +
+  sensor_id` (mirrors the ESPHome remote-input pattern).
+* `mqtt.sensors[]` declared on the device's catalog (same form as inputs /
+  outputs).
+* HA discovery wired through `ha_availabilty_message` with `device_class`,
+  `state_class`, `unit_of_measurement` overrides.
+* `RemoteSensorForm` + `RemoteSensorTable` for the UI (predefined unit /
+  device_class via Select + datalist).
+* `MqttTopicTree` — collapsible accordion replacing the flat scan table;
+  per-leaf `+ Input / + Output / + Sensor` buttons + per-branch
+  `Use as prefix`.
+* Per-section "Browse MQTT broker…" merged into one top-level button (user
+  feedback — section buttons were redundant in the device-centric flow).
+
+**Done — refactor (R-A → R-H)**:
+1. **R-A** `boneio/core/config/yaml_util.py:_get_schema()` now applies
+   module-provided schema extensions at first load. Modules drop a
+   `schema_extension.yaml` at their root → it's deep-merged into the
+   loaded Cerberus schema dict. Zero upstream YAML edits needed for new
+   protocols.
+2. **R-B** Removed 113 lines of MQTT-specific fields from
+   `boneio/schema/remote_devices.yaml` → file is now byte-identical to
+   upstream. All fields moved to
+   `boneio/modules/remote_mqtt/schema_extension.yaml`.
+3. **R-C** Deleted root-level `boneio/schema/remote_sensors.yaml`;
+   `schema.yaml` no longer references it. The section is added by the
+   module's `schema_extension.yaml`.
+4. **R-D** `manager.py` lost ~100 lines: `register_remote_sensors`,
+   `unregister_remote_sensors`, `_reload_remote_sensors`, and the HA
+   discovery closure all moved to
+   `boneio/modules/remote_mqtt/manager_integration.py`. `manager.py` keeps
+   a single 4-line hook (`setup`, `teardown_on_devices_reload`,
+   `setup_on_devices_reload`) and a 2-line lambda in the reload-dispatcher
+   dict. The `remote_source == "mqtt"` branch in `register_remote_outputs`
+   collapsed to `if try_setup_mqtt_output(...): continue`.
+5. **R-E** `remote_input_registrar.py` reduced to 2 thin dispatch calls:
+   `try_setup_mqtt_input` (setup) and `cleanup_mqtt_for_registrar`
+   (unregister). All MQTT lifecycle is module-side.
+6. **R-F** `RemoteSensorForm.tsx` + `RemoteSensorTable.tsx` moved into
+   `frontend/src/components/UISettings/modules/remote_mqtt/{forms,tables}/`.
+   `FormRenderer` / `TableRenderer` keep one-line imports + one-line
+   dispatch (same pattern as expander).
+7. **R-G** `schema_converter.main()` now uses `_get_schema()` so the
+   pre-generated JSON schemas under `boneio/webui/schema/` include the
+   module-merged fields. Regenerated all section files on the device
+   (arm64 native) and rsync'd back to the repo. New files:
+   `remote_inputs.schema.json`, `remote_outputs.schema.json`,
+   `remote_sensors.schema.json`.
+8. **R-H** Deploy → invalidated config disk cache → full Cerberus
+   validation passed against the module-merged schema. Live logs show
+   `Schema: applied extension from modules/remote_mqtt` at startup,
+   followed by the normal input/output/sensor registration on the alarm
+   device. Anti-leak grep (`MQTTGeneric*`, `remote_source.*mqtt`) returns
+   only 2 hits in upstream files: one comment in `manager.py` and one
+   docstring enum in `components/output/remote.py` — zero logic.
+
+**UX polish committed alongside**:
+* Global placeholder italic + 50% opacity in `index.css` (previously
+  placeholders blended with values).
+* `shadcn → DaisyUI` CSS variable bridge (`--background`,
+  `--muted-foreground`, etc.) → stacked dialogs now have solid
+  `bg-base-100` instead of bleeding through.
+* `[data-slot="dialog-content"]` solid background `!important` because
+  Tailwind v4's `bg-background` doesn't reliably resolve without `@theme`.
+* `<datalist>` autocomplete on the device-catalog sensors table for unit
+  and device_class (compact, no Select-per-cell weight).
+* Topic-tree leaf actions changed `+ in / + out / + sens` → full words
+  (`+ Input / + Output / + Sensor`) with `flex-wrap` for narrow widths.
+* Tree branches got `role="button"` + `tabIndex={0}` + `aria-expanded`
+  for keyboard nav.
+
+**Tooling**:
+* Created `~/.claude/agents/ux-reviewer.md` — review-only subagent for
+  post-write UX critique.
+* Created `~/.claude/agents/frontend-architect.md` — proactive guidance
+  for React + Tailwind v4 + DaisyUI + shadcn patterns. Use before writing
+  UI, not after.
+
+**GitHub housekeeping** (also today):
+* Closed public PR #67 (M4rv-dev → boneIO-eu) — was leaking our private
+  branch into upstream notifications.
+* Detach attempt via `gh api -X PATCH ... fork=false` ignored by GitHub
+  REST. Decided to leave the fork as-is (PR closed + `git push origin`
+  locally disabled = no further notifications upstream). Repo stays
+  public but no longer signals work-in-progress to upstream maintainers.
+
+**Architecture metrics after refactor**:
+| File | lines vs upstream tag `8f1a21c` |
+|---|---|
+| `boneio/schema/remote_devices.yaml` | **0** (was +113) |
+| `boneio/schema/schema.yaml` | **0** (was +3) |
+| `boneio/core/manager/manager.py` | ~13 added (down from ~120) |
+| `boneio/core/manager/remote_input_registrar.py` | ~13 added (down from ~26) |
+| `boneio/core/config/yaml_util.py` | +56 (one-off, generic, reusable by future modules) |
+| Frontend Remote*Form upstream conditionals | unchanged (each ~30 lines — thin dispatch) |
+
+**Verified on device**: existing config with alarm_ropam (1 input + 1 output
++ 1 sensor on `n64/99/*`) registered cleanly on a cold start after disk
+cache invalidation. MQTT publish on `n64/99/cmd/out/6` confirmed via journal
+on toggle. Sensor publishes to `boneio/blk174d77/sensor/alarm_ropam_temp1`
+in `{"state": <float>}` form — HA picked it up via discovery.
+
 ### 2026-05-15 → 2026-05-16 — Session 1 (upstream merge + module refactor)
 
 **Goal**: Catch up with upstream v1.4.0dev2 (was 14 commits behind), preserve our expansion-board

@@ -159,18 +159,14 @@ class RemoteInputRegistrar:
             else {}
         )
 
-        # Generic MQTT remote inputs are handled by the remote_mqtt extension
-        # module — entire factory + HA discovery + subscribe lives there.
-        if remote_source == "mqtt":
-            from boneio.modules.remote_mqtt import setup_remote_input
-            return setup_remote_input(
-                custom_id=custom_id,
-                cfg=ri_cfg,
-                manager=self._manager,
-                inputs_dict=inputs_dict,
-                parsed_actions=parsed_actions,
-                ha_discovery_fn=self._ha_discovery_fn,
-            )
+        # Module-provided protocols (e.g. remote_mqtt) own their own factory +
+        # HA discovery + subscribe. If a module claims this row, return early.
+        from boneio.modules.remote_mqtt.manager_integration import try_setup_mqtt_input
+        handled = try_setup_mqtt_input(
+            self._manager, custom_id, ri_cfg, inputs_dict, parsed_actions, self._ha_discovery_fn,
+        )
+        if handled is not None:
+            return handled
 
         esphome_input = ESPHomeBinarySensorInput(
             id=custom_id,
@@ -242,15 +238,11 @@ class RemoteInputRegistrar:
         Args:
             inputs_dict: Shared ``InputManager._inputs`` dictionary.
         """
-        # remote_mqtt extension: unsubscribe MQTTGenericInput entries before drop
-        try:
-            import asyncio
-            from boneio.modules.remote_mqtt import cleanup_remote_inputs
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(cleanup_remote_inputs(inputs_dict))
-        except Exception:  # noqa: BLE001
-            pass
+        # Module-owned cleanup (subscriptions, timers, etc.) — invoked before
+        # the registrar drops its rows, so modules can flush state attached to
+        # entries they originally registered.
+        from boneio.modules.remote_mqtt.manager_integration import cleanup_mqtt_for_registrar
+        cleanup_mqtt_for_registrar(inputs_dict)
 
         to_remove = [
             k for k, v in inputs_dict.items() if isinstance(v, RemoteInputBase)

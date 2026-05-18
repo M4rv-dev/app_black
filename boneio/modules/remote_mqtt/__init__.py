@@ -44,6 +44,9 @@ __all__ = [
     "cleanup_remote_inputs",
     "setup_remote_output",
     "cleanup_remote_outputs",
+    "MQTTGenericSensor",
+    "setup_remote_sensor",
+    "cleanup_remote_sensors",
 ]
 
 
@@ -70,4 +73,13 @@ def __getattr__(name: str) -> Any:
     if name == "cleanup_remote_outputs":
         from boneio.modules.remote_mqtt.output import cleanup_remote_outputs
         return cleanup_remote_outputs
+    if name == "MQTTGenericSensor":
+        from boneio.modules.remote_mqtt.sensor import MQTTGenericSensor
+        return MQTTGenericSensor
+    if name == "setup_remote_sensor":
+        from boneio.modules.remote_mqtt.sensor import setup_remote_sensor
+        return setup_remote_sensor
+    if name == "cleanup_remote_sensors":
+        from boneio.modules.remote_mqtt.sensor import cleanup_remote_sensors
+        return cleanup_remote_sensors
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

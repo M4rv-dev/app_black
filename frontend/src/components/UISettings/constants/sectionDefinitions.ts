@@ -33,6 +33,7 @@ export const RELOAD_SECTIONS: SectionDefinition[] = [
   { name: 'remote_devices', icon: '🌐', translationKey: 'sections.remote_devices', group: 'remote' },
   { name: 'remote_inputs', icon: '🔌', translationKey: 'sections.remote_inputs', group: 'remote' },
   { name: 'remote_outputs', icon: '📡', translationKey: 'sections.remote_outputs', group: 'remote' },
+  { name: 'remote_sensors', icon: '🌡️', translationKey: 'sections.remote_sensors', group: 'remote' },
 ];
 
 /**
@@ -69,6 +70,7 @@ export const ARRAY_SECTIONS = [
   'virtual_energy_sensor',
   'remote_devices',
   'remote_outputs',
+  'remote_sensors',
   'template',
   'adc',
   'board_sensors',

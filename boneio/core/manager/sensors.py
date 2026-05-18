@@ -95,6 +95,9 @@ class SensorManager:
         self._system_sensors = []
         self._virtual_energy_sensors = []
         self._virtual_energy_sensor_configs = sensors.get(VIRTUAL_ENERGY_SENSOR, [])
+        # MQTT remote sensors (modules/remote_mqtt) — registered post-init
+        # via Manager.register_remote_sensors. Keyed by entity id.
+        self._remote_sensors: dict[str, Any] = {}
 
         # Configure all sensor types
         self._configure_temp_sensors(sensors=sensors)

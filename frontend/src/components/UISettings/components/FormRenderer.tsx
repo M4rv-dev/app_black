@@ -19,6 +19,7 @@ import ADCForm from '../ADCForm';
 import BoardSensorsForm from '../BoardSensorsForm';
 import RemoteInputForm from '../RemoteInputForm';
 import RemoteOutputForm from '../RemoteOutputForm';
+import RemoteSensorForm from '../modules/remote_mqtt/forms/RemoteSensorForm';
 import InputTypeSwitcher from './InputTypeSwitcher';
 
 interface FormRendererProps {
@@ -163,6 +164,24 @@ const FormRenderer: React.FC<FormRendererProps> = (props) => {
         attemptedSubmit={props.attemptedSubmit}
         interlockGroups={props.interlockGroups}
         onInterlockGroupCreated={props.onInterlockGroupCreated}
+      />
+    );
+  }
+
+  // Remote sensors — MQTT generic sensors form
+  if (sectionType === 'remote_sensors') {
+    return (
+      <RemoteSensorForm
+        data={editingItem}
+        onChange={props.onChange}
+        isNew={props.editingIndex === null}
+        schema={props.schema}
+        allAreas={props.allAreas}
+        allRemoteDevices={props.allRemoteDevices}
+        existingItems={value}
+        editingIndex={editingIndex}
+        onValidationChange={props.onValidationChange}
+        attemptedSubmit={props.attemptedSubmit}
       />
     );
   }

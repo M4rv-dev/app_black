@@ -81,9 +81,11 @@ class MQTTGenericOutput(RemoteOutputBase):
         return True
 
     async def async_turn_on(self, timestamp: float | None = None) -> None:
+        _LOGGER.info("MQTTGenericOutput '%s' async_turn_on CALLED", self._id)
         await self._publish_state(ON, timestamp)
 
     async def async_turn_off(self, timestamp: float | None = None) -> None:
+        _LOGGER.info("MQTTGenericOutput '%s' async_turn_off CALLED", self._id)
         await self._publish_state(OFF, timestamp)
 
     async def async_set_brightness(self, brightness: int, timestamp: float | None = None) -> None:
