@@ -428,11 +428,21 @@ class Oled:
             self._next_screen()
 
     def _next_screen(self) -> None:
-        """Switch to next screen."""
+        """Switch to next screen.
+
+        We explicitly clear the framebuffer between screens to defeat the
+        "second click clears" symptom: under i2c bus contention luma's
+        page-by-page write of the new canvas can land partially, leaving
+        a column of the previous screen's pixels visible until the *next*
+        successful flush overwrites them. A dedicated all-black write here
+        + a retry loop on render_display() means each screen-switch starts
+        from a guaranteed-clean buffer.
+        """
         # Remove old listeners before switching screen (only if exists)
         with contextlib.suppress(KeyError):
             self._event_bus.remove_event_listener(listener_id=f"oled_{self._current_screen}")
         self._current_screen = next(self._screen_cycle)
+        self.clear_display()        # best-effort; logs warning if i2c is hot
         self.render_display()
 
     # --- Shutdown helper methods ---
@@ -591,53 +601,91 @@ class Oled:
                 _LOGGER.warning("OLED clear failed (%s) — first paint will overwrite", exc)
 
     def render_display(self) -> None:
-        """Render display - main method that decides what to display."""
+        """Render display - main method that decides what to display.
 
+        Uses ``_safe_draw`` so a transient i2c stall during screen-switch
+        retries instead of leaving the framebuffer half-written (which
+        manifested as ghost pixels from the previous screen — the
+        "second click clears" bug).
+        """
         data = self._host_data.get(self._current_screen)
-        if data:
-            if self._current_screen == "web":
-                self._draw_qr_code(url=str(data))
-            elif isinstance(data, dict):
-                with self._locked_canvas() as draw:
-                    if self._grouped_outputs_by_expander and self._current_screen in self._grouped_outputs_by_expander:
-                        self._draw_output(data, draw)
-                        for id in data:
-                            self._event_bus.add_event_listener(
-                                event_type="output",
-                                entity_id=id,
-                                listener_id=f"oled_{self._current_screen}",
-                                target=self._output_callback,
-                            )
-                    elif self._current_screen == UPTIME:
-                        self._draw_uptime(draw)
-                        self._event_bus.add_event_listener(
-                            event_type="host",
-                            entity_id=f"{self._current_screen}_hoststats",
-                            listener_id=f"oled_{self._current_screen}",
-                            target=self._standard_callback,
-                        )
-                    elif self._input_groups and self._current_screen in self._input_groups:
-                        self._draw_input(data, draw)
-                        for id in data:
-                            self._event_bus.add_event_listener(
-                                event_type="input",
-                                entity_id=id,
-                                listener_id=f"oled_{self._current_screen}",
-                                target=self._input_callback,
-                            )
-                    else:
-                        self._draw_standard(data, draw)
-                        self._event_bus.add_event_listener(
-                            event_type="host",
-                            entity_id=f"{self._current_screen}_hoststats",
-                            listener_id=f"oled_{self._current_screen}",
-                            target=self._standard_callback,
-                        )
-        else:
+        if not data:
             self._next_screen()
+            return
+
+        if self._current_screen == "web":
+            self._draw_qr_code(url=str(data))
+        elif isinstance(data, dict):
+            # Pick the right draw routine + listener subscription for the
+            # current screen kind. The selector returns (draw_fn, register_fn)
+            # so the actual canvas write happens inside `_safe_draw` (locked,
+            # retryable) and the side-effecting listener registration happens
+            # AFTER a successful flush — that ordering prevents stale
+            # listeners from firing _update_display against a half-painted
+            # frame.
+            draw_fn, register_fn = self._render_plan(data)
+            if self._safe_draw(draw_fn, label=f"render_display:{self._current_screen}"):
+                register_fn()
 
         if not self._cancel_sleep_handle and self._sleep_timeout.total_seconds > 0:
             self.start_sleep_timer()
+
+    def _render_plan(self, data: dict):
+        """Return (draw_fn, register_fn) for the current screen.
+
+        ``draw_fn(draw)`` runs inside the locked canvas. ``register_fn()``
+        runs only after a successful canvas flush — registers event
+        listeners that will trigger ``_update_display`` on future state
+        changes. Separating the two keeps the i2c write tight (retryable
+        as an atom) and never re-registers listeners on a failed paint.
+        """
+        screen = self._current_screen
+        if self._grouped_outputs_by_expander and screen in self._grouped_outputs_by_expander:
+            def _draw(draw):
+                self._draw_output(data, draw)
+            def _register():
+                for id in data:
+                    self._event_bus.add_event_listener(
+                        event_type="output",
+                        entity_id=id,
+                        listener_id=f"oled_{screen}",
+                        target=self._output_callback,
+                    )
+            return _draw, _register
+        if screen == UPTIME:
+            def _draw(draw):
+                self._draw_uptime(draw)
+            def _register():
+                self._event_bus.add_event_listener(
+                    event_type="host",
+                    entity_id=f"{screen}_hoststats",
+                    listener_id=f"oled_{screen}",
+                    target=self._standard_callback,
+                )
+            return _draw, _register
+        if self._input_groups and screen in self._input_groups:
+            def _draw(draw):
+                self._draw_input(data, draw)
+            def _register():
+                for id in data:
+                    self._event_bus.add_event_listener(
+                        event_type="input",
+                        entity_id=id,
+                        listener_id=f"oled_{screen}",
+                        target=self._input_callback,
+                    )
+            return _draw, _register
+        # Default fallback — system info screens (cpu / memory / disk / …)
+        def _draw(draw):
+            self._draw_standard(data, draw)
+        def _register():
+            self._event_bus.add_event_listener(
+                event_type="host",
+                entity_id=f"{screen}_hoststats",
+                listener_id=f"oled_{screen}",
+                target=self._standard_callback,
+            )
+        return _draw, _register
 
     def _update_display(self) -> None:
         """Update OLED display without re-registering listeners.
@@ -751,11 +799,20 @@ class Oled:
         )
 
     async def _sleep_callback(self, timestamp) -> None:
-        """Sleep callback."""
+        """Sleep callback — fade the screen to black after inactivity.
+
+        Used to use a raw locked_canvas write; that threw uncaught
+        OSError(121) when fired right during boot-time i2c contention and
+        left the asyncio task's exception unretrieved (loud journal noise).
+        Routing through _safe_draw retries and demotes the failure to a
+        warning — losing the sleep-blank is a cosmetic miss, not a crash.
+        """
         self._sleep = True
         self._cancel_sleep_handle = None
-        with self._locked_canvas() as draw:
-            draw.rectangle(self._device.bounding_box, outline="black", fill="black")
+        self._safe_draw(
+            lambda draw: draw.rectangle(self._device.bounding_box, outline="black", fill="black"),
+            label="_sleep_callback",
+        )
         _LOGGER.debug("OLED display sleeping")
 
     def wake_up(self) -> None:
