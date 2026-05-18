@@ -141,4 +141,4 @@ frontend/dev-dist/
 deploy_backend.sh
 
 # macOS metadata
-.DS_Store
+.DS_Storetools/payload/
