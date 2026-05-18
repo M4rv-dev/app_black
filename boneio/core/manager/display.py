@@ -195,12 +195,14 @@ class DisplayManager:
                     self._manager.inputs._inputs["oled_button"] = oled_button
                     _LOGGER.info("OLED button configured on pin %s", OLED_PIN)
             
-            self._oled.render_display()
-            
-            # Signal early_oled to stop rendering — DisplayManager owns the screen now
+            # Signal early_oled to stop rendering BEFORE our first draw — otherwise
+            # both writers race on i2c-2 and the kernel returns EREMOTEIO on the
+            # first canvas() that DisplayManager sends. handoff() is a flag flip,
+            # not a write, so it's safe to call before the first paint.
             from boneio.hardware.display.early_oled import handoff
             handoff()
-            
+            self._oled.render_display()
+
             _LOGGER.info("OLED display configured successfully")
             
         except (GPIOInputException, I2CError) as err:
