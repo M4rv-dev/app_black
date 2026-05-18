@@ -204,37 +204,55 @@ const TreeBranch: React.FC<TreeBranchProps> = ({ node, depth, expanded, toggle, 
               <FaArrowRight aria-hidden /> Use as prefix
             </button>
           )}
-          {node.leaf && (
-            <>
-              <button
-                type="button"
-                className="btn btn-outline btn-xs gap-1"
-                onClick={() => onImportLeaf(node.leaf!.topic, node.leaf!, 'inputs')}
-                disabled={usedIn === 'inputs'}
-                aria-label={`Add ${node.leaf.topic} as input`}
-              >
-                <FaPlus aria-hidden /> Input
-              </button>
-              <button
-                type="button"
-                className="btn btn-outline btn-xs gap-1"
-                onClick={() => onImportLeaf(node.leaf!.topic, node.leaf!, 'outputs')}
-                disabled={usedIn === 'outputs'}
-                aria-label={`Add ${node.leaf.topic} as output`}
-              >
-                <FaPlus aria-hidden /> Output
-              </button>
-              <button
-                type="button"
-                className="btn btn-outline btn-xs gap-1"
-                onClick={() => onImportLeaf(node.leaf!.topic, node.leaf!, 'sensors')}
-                disabled={usedIn === 'sensors'}
-                aria-label={`Add ${node.leaf.topic} as sensor`}
-              >
-                <FaPlus aria-hidden /> Sensor
-              </button>
-            </>
-          )}
+          {node.leaf && (() => {
+            // Tint each "+ X" button by whether that target is a natural fit
+            // for the leaf's inferred payload type. The strongest match becomes
+            // the suggested action (success); ill-fit options stay outline.
+            const pt = node.leaf.payload_type;
+            const inputCls = pt === 'binary' ? 'btn-success' : 'btn-outline';
+            const sensorCls = (pt === 'numeric' || pt === 'json') ? 'btn-warning' : 'btn-outline';
+            const outputCls = 'btn-outline';
+            const sensorDisabled = pt === 'binary' || pt === 'empty';
+            return (
+              <>
+                <button
+                  type="button"
+                  className={`btn btn-xs gap-1 ${inputCls}`}
+                  onClick={() => onImportLeaf(node.leaf!.topic, node.leaf!, 'inputs')}
+                  disabled={usedIn === 'inputs'}
+                  aria-label={`Add ${node.leaf.topic} as input`}
+                  title={pt === 'binary' ? 'Suggested: binary payload' : undefined}
+                >
+                  <FaPlus aria-hidden /> Input
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-xs gap-1 ${outputCls}`}
+                  onClick={() => onImportLeaf(node.leaf!.topic, node.leaf!, 'outputs')}
+                  disabled={usedIn === 'outputs'}
+                  aria-label={`Add ${node.leaf.topic} as output`}
+                >
+                  <FaPlus aria-hidden /> Output
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-xs gap-1 ${sensorCls}`}
+                  onClick={() => onImportLeaf(node.leaf!.topic, node.leaf!, 'sensors')}
+                  disabled={usedIn === 'sensors' || sensorDisabled}
+                  aria-label={`Add ${node.leaf.topic} as sensor`}
+                  title={
+                    sensorDisabled
+                      ? 'Numeric / JSON payloads only'
+                      : (pt === 'numeric' || pt === 'json')
+                        ? 'Suggested: numeric / JSON payload'
+                        : undefined
+                  }
+                >
+                  <FaPlus aria-hidden /> Sensor
+                </button>
+              </>
+            );
+          })()}
         </div>
       </div>
 

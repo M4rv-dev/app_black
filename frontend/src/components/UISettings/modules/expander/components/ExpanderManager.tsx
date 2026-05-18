@@ -40,8 +40,18 @@ const ExpanderManager: React.FC<UseExpanderManagerArgs> = (args) => {
         </div>
       )}
 
-      <div className="divider text-sm">{t('boneio_config.expander_section')}</div>
-      <div className="space-y-3">
+      {/* Matches the card-with-heading wrapper used by Remote Devices' MQTT
+          settings — keeps expander and remote_mqtt visually parallel as
+          "module configuration blocks", not unrelated UI islands. */}
+      <div className="card bg-base-200 p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <h3 className="font-medium text-lg">{t('boneio_config.expander_section')}</h3>
+          {m.hasExpander && (
+            <span className="badge badge-sm">
+              {m.exOutputs.length} {t('mcp.expander_outputs_active')}
+            </span>
+          )}
+        </div>
         {m.result && (
           <div className={`alert py-2 text-sm ${m.result.status === 'success' ? 'alert-success' : 'alert-error'}`}>
             {m.result.status === 'success'

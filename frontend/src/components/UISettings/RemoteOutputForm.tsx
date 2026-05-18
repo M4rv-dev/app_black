@@ -320,31 +320,48 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
                     )}
                   </div>
 
-                  {/* Output Type */}
+                  {/* Output Type — for MQTT generic outputs the type is
+                      declared on the device's mqtt.outputs catalog; reading
+                      it here as a Select duplicates that source of truth and
+                      confuses the user. Show as a read-only badge instead. */}
                   <div className="form-control">
                     <label className="label">
                       <span className="label-text font-medium">{t('remote_outputs.output_type')}</span>
                     </label>
-                    <Select
-                      value={data.output_type || 'switch'}
-                      onValueChange={(v) => updateField('output_type', v)}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="switch" disabled={outputTypeLocked}>{t('outputs.categories.switches')}</SelectItem>
-                        <SelectItem value="light">{t('outputs.categories.lights')}</SelectItem>
-                        <SelectItem value="valve" disabled={outputTypeLocked}>{t('outputs.categories.valves')}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <label className="label">
-                      <span className="label-text-alt">
-                        {outputTypeLocked
-                          ? t('remote_outputs.output_type_locked_hint')
-                          : t('remote_outputs.output_type_hint')}
-                      </span>
-                    </label>
+                    {data.remote_source === 'mqtt' ? (
+                      <div className="flex items-center gap-2 py-2">
+                        <span className="badge badge-info badge-lg">
+                          {data.output_type || 'switch'}
+                        </span>
+                        <span className="text-xs text-base-content/60">
+                          {t('remote_outputs.output_type_from_device_hint') ||
+                           'Set on the device\'s output catalog. Edit there to change.'}
+                        </span>
+                      </div>
+                    ) : (
+                      <>
+                        <Select
+                          value={data.output_type || 'switch'}
+                          onValueChange={(v) => updateField('output_type', v)}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="switch" disabled={outputTypeLocked}>{t('outputs.categories.switches')}</SelectItem>
+                            <SelectItem value="light">{t('outputs.categories.lights')}</SelectItem>
+                            <SelectItem value="valve" disabled={outputTypeLocked}>{t('outputs.categories.valves')}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <label className="label">
+                          <span className="label-text-alt">
+                            {outputTypeLocked
+                              ? t('remote_outputs.output_type_locked_hint')
+                              : t('remote_outputs.output_type_hint')}
+                          </span>
+                        </label>
+                      </>
+                    )}
                   </div>
 
                   {/* On Disconnect */}

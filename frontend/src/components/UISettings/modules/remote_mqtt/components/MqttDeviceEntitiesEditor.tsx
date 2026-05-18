@@ -233,41 +233,52 @@ const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ val
   return (
     <div className="space-y-4">
       {/* Topic prefix + global "browse broker" entry point */}
-      <div className="space-y-1">
-        <div className="flex items-end gap-2">
-          <div className="form-control flex-1">
-            <label className="label py-1">
-              <span className="label-text font-medium">
-                {t('remote_mqtt.field_topic_prefix') || 'Topic prefix'}
-              </span>
-            </label>
-            <input
-              type="text"
-              className="input input-bordered input-sm font-mono"
-              value={prefix}
-              onChange={e => onChange({ ...value, topic_prefix: e.target.value || undefined })}
-              placeholder="e.g. n64/88"
-            />
-          </div>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={() => openScan('inputs')}
-            title={t('remote_mqtt.browse_broker_hint') || 'Discover devices and topics live on your MQTT broker'}
-          >
-            <FaSearch className="mr-1" />
-            {t('remote_mqtt.browse_broker') || 'Browse MQTT broker…'}
-          </button>
-        </div>
-        <span className="label-text-alt text-xs text-base-content/60">
+      {/* Topic prefix — sets the search scope for the broker discovery below */}
+      <div className="form-control">
+        <label className="label py-1">
+          <span className="label-text font-medium">
+            {t('remote_mqtt.field_topic_prefix') || 'Topic prefix'}
+          </span>
+        </label>
+        <input
+          type="text"
+          className="input input-bordered input-sm font-mono"
+          value={prefix}
+          onChange={e => onChange({ ...value, topic_prefix: e.target.value || undefined })}
+          placeholder="e.g. n64/88"
+        />
+        <span className="label-text-alt text-xs text-base-content/60 mt-0.5">
           {t('remote_mqtt.topic_prefix_hint') ||
             'Common prefix of all topics for this device (e.g. n64/88). Per-entity topics are stored individually below.'}
         </span>
       </div>
 
+      {/* Primary CTA — discover what the broker is publishing.
+          Promoted to its own row (left-aligned, full-width on mobile) so it
+          reads as the happy-path entry point, not a secondary tool. */}
+      <div className="card bg-primary/5 border border-primary/20 p-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-sm">
+            {t('remote_mqtt.discover_title') || 'Discover entities from broker'}
+          </div>
+          <div className="text-xs text-base-content/60 mt-0.5">
+            {t('remote_mqtt.discover_hint') ||
+              'Listens on the prefix above for ~5s and lists topics in a tree so you can add them as inputs, outputs or sensors.'}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm w-full sm:w-auto"
+          onClick={() => openScan('inputs')}
+        >
+          <FaSearch className="mr-1" />
+          {t('remote_mqtt.browse_broker') || 'Browse MQTT broker…'}
+        </button>
+      </div>
+
       {/* Inputs table */}
       <div className="collapse collapse-arrow bg-base-200">
-        <input type="checkbox" defaultChecked />
+        <input type="checkbox" defaultChecked={inputs.length > 0} />
         <div className="collapse-title font-medium text-sm">
           {sectionLabel.inputs}
           <span className="badge badge-sm ml-2">{inputs.length}</span>
@@ -372,7 +383,7 @@ const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ val
 
       {/* Outputs table */}
       <div className="collapse collapse-arrow bg-base-200">
-        <input type="checkbox" />
+        <input type="checkbox" defaultChecked={outputs.length > 0} />
         <div className="collapse-title font-medium text-sm">
           {sectionLabel.outputs}
           <span className="badge badge-sm ml-2">{outputs.length}</span>
@@ -489,7 +500,7 @@ const MqttDeviceEntitiesEditor: React.FC<MqttDeviceEntitiesEditorProps> = ({ val
 
       {/* Sensors table */}
       <div className="collapse collapse-arrow bg-base-200">
-        <input type="checkbox" />
+        <input type="checkbox" defaultChecked={sensors.length > 0} />
         <div className="collapse-title font-medium text-sm">
           {sectionLabel.sensors}
           <span className="badge badge-sm ml-2">{sensors.length}</span>

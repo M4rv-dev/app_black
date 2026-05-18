@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import axios from '@/api/axios';
-import { FaPlus, FaTrash, FaSync, FaSearch } from 'react-icons/fa';
+import { FaPlus, FaTrash, FaSync } from 'react-icons/fa';
 import { sanitizeId } from './helpers/idValidation';
 import { useTranslation } from '@/hooks/useTranslation';
 import HelpLabel from './components/HelpLabel';
-import { MqttScanDialog, MqttDeviceEntitiesEditor, type MqttDeviceConfig } from './modules/remote_mqtt';
+import { MqttDeviceEntitiesEditor, type MqttDeviceConfig } from './modules/remote_mqtt';
 import {
   Select,
   SelectContent,
@@ -47,8 +47,7 @@ const RemoteDeviceForm: React.FC<RemoteDeviceFormProps> = ({ data, onChange }) =
   const { t } = useTranslation();
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [isDiscovering, setIsDiscovering] = useState(false);
-  const [mqttScanOpen, setMqttScanOpen] = useState(false);
-  
+
   const handleChange = (field: string, value: any) => {
     onChange({ ...data, [field]: value });
   };
@@ -631,18 +630,7 @@ const RemoteDeviceForm: React.FC<RemoteDeviceFormProps> = ({ data, onChange }) =
       {/* MQTT Settings - shown when protocol is mqtt */}
       {(data?.protocol === 'mqtt' || !data?.protocol) && (
         <div className="card bg-base-200 p-4 space-y-4">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <h3 className="font-medium text-lg">{t('remote_devices.mqtt_settings')}</h3>
-            <button
-              type="button"
-              className="btn btn-outline btn-sm"
-              onClick={() => setMqttScanOpen(true)}
-              title={t('remote_mqtt.scan_button_tooltip') || 'Browse what the broker is publishing'}
-            >
-              <FaSearch className="mr-1" />
-              {t('remote_mqtt.scan_button') || 'Scan broker'}
-            </button>
-          </div>
+          <h3 className="font-medium text-lg">{t('remote_devices.mqtt_settings')}</h3>
 
           {/* Generic-MQTT branch: device declares its own inputs/outputs catalog
               (analogous to ESPHome _discovered_binary_sensors). For device_type
@@ -758,8 +746,6 @@ const RemoteDeviceForm: React.FC<RemoteDeviceFormProps> = ({ data, onChange }) =
         </div>
       )}
 
-      {/* MQTT scan dialog (module-owned) */}
-      <MqttScanDialog open={mqttScanOpen} onOpenChange={setMqttScanOpen} />
     </div>
   );
 };
