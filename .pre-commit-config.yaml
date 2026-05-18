@@ -8,6 +8,16 @@ repos:
       - id: check-added-large-files
       - id: check-yaml
       - id: check-json
+      - id: detect-private-key
+
+  # Secrets scan — catches passwords/tokens/keys before they hit git.
+  # Added after we leaked a device password in deploy_backend.sh; the
+  # devops-practices skill flags this as non-negotiable for this kind
+  # of repo.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.0
+    hooks:
+      - id: gitleaks
 
   # Ruff replaces black + isort + flake8 in a single, fast tool
   - repo: https://github.com/astral-sh/ruff-pre-commit
