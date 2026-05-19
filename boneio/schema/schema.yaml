@@ -319,7 +319,10 @@ modbus:
     uart:
       type: string
       required: True
-      allowed: ['uart1', 'uart2', 'uart3', 'uart4', 'uart5']
+      # Includes USB-RS485 dongle paths (matches UARTS dict in boneio/const.py
+      # and the frontend's modbus.schema.json — keep all three in sync).
+      allowed: ['uart1', 'uart2', 'uart3', 'uart4', 'uart5',
+                '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0']
       meta:
         label: Uart ID to use
     baudrate:
