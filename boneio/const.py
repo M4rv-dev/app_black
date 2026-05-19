@@ -52,6 +52,9 @@ UARTS = {
     # "uart3": {ID: "/dev/ttyS3", TX: "P9.42", RX: None},
     "uart4": {ID: "/dev/ttyS4", TX: "P9.13", RX: "P9.11"},
     # "uart5": {ID: "/dev/ttyS5", TX: "P8.37", RX: "P8.38"},
+    "/dev/ttyUSB0": {ID: "/dev/ttyUSB0", TX: "USB", RX: "USB"},
+    "/dev/ttyUSB1": {ID: "/dev/ttyUSB1", TX: "USB", RX: "USB"},
+    "/dev/ttyACM0": {ID: "/dev/ttyACM0", TX: "USB", RX: "USB"},
 }
 
 output_actions = {

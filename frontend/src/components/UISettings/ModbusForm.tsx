@@ -42,6 +42,9 @@ const ModbusForm: React.FC<ModbusFormProps> = ({ data, onChange }) => {
           <option value="uart3">UART3</option>
           <option value="uart4">UART4 (current BoneIO)</option>
           <option value="uart5">UART5</option>
+          <option value="/dev/ttyUSB0">/dev/ttyUSB0 (USB-RS485 dongle)</option>
+          <option value="/dev/ttyUSB1">/dev/ttyUSB1 (USB-RS485 dongle)</option>
+          <option value="/dev/ttyACM0">/dev/ttyACM0 (USB-RS485 dongle)</option>
         </select>
         <HelpLabel>{t('modbus_config.uart_help')}</HelpLabel>
       </div>

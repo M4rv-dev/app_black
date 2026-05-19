@@ -15,7 +15,10 @@
             "uart2",
             "uart3",
             "uart4",
-            "uart5"
+            "uart5",
+            "/dev/ttyUSB0",
+            "/dev/ttyUSB1",
+            "/dev/ttyACM0"
           ],
           "examples": [
             "uart1"
