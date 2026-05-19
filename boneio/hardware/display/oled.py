@@ -199,7 +199,7 @@ class Oled:
             with canvas(self._device) as draw:
                 yield draw
 
-    def _safe_draw(self, draw_callable, *, label: str, retries: int = 2) -> bool:
+    def _safe_draw(self, draw_callable, *, label: str, retries: int = 6) -> bool:
         """Execute ``draw_callable(draw)`` inside a locked canvas, retry on
         transient i2c errors (EAGAIN/ETIMEDOUT/EREMOTEIO) up to ``retries``
         times with exponential backoff.
@@ -208,6 +208,17 @@ class Oled:
         on terminal failure so the OLED journal stays diagnosable. Used by
         the periodic refresh paths where dropping a frame is preferable to
         crashing the loop.
+
+        Retry budget (retries=6 → 7 attempts, sleep ramp 10→640ms capped):
+        total backoff ≈ 1.27s (10+20+40+80+160+320+640ms summed across the
+        6 inter-attempt sleeps). The previous budget (retries=2 → ~30ms of
+        sleep) was too short for the actual bus contention on this device:
+        PCT2075 long temp reads at 0x48 stall the bus for 10-50ms, MCP23017
+        scans add their own windows, so 3 tightly-spaced attempts often all
+        landed inside the same stall and returned False. False from
+        _safe_draw with the next clear_display() succeeding produces the
+        "ekran ucięty w połowie" symptom — luma flushes pages 0-N then
+        errors out, the partial frame stays on screen.
         """
         for attempt in range(retries + 1):
             try:
@@ -220,7 +231,9 @@ class Oled:
                         "OLED %s: transient i2c errno %d, retry %d/%d",
                         label, exc.errno, attempt + 1, retries,
                     )
-                    time.sleep(0.01 * (2 ** attempt))
+                    # Exponential 10→640ms (cap protects against pathological
+                    # retries values; with default=6 the cap is never hit).
+                    time.sleep(min(0.01 * (2 ** attempt), 0.64))
                     continue
                 _LOGGER.warning(
                     "OLED %s failed after %d attempt(s): %s",
@@ -437,13 +450,45 @@ class Oled:
         successful flush overwrites them. A dedicated all-black write here
         + a retry loop on render_display() means each screen-switch starts
         from a guaranteed-clean buffer.
+
+        If render_display() exhausts its retry budget (bus stuck inside
+        a long stall window), schedule a deferred re-paint ~300ms later
+        when the parallel i2c drivers (PCT2075, MCP23017) have released
+        the bus. Without this, a click landing on a hot bus produces an
+        "ucięty w połowie" screen that stays until the next click.
         """
         # Remove old listeners before switching screen (only if exists)
         with contextlib.suppress(KeyError):
             self._event_bus.remove_event_listener(listener_id=f"oled_{self._current_screen}")
         self._current_screen = next(self._screen_cycle)
-        self.clear_display()        # best-effort; logs warning if i2c is hot
-        self.render_display()
+        self.clear_display()        # 4-retry; logs warning if all fail
+        if not self.render_display():
+            self._schedule_recovery_paint(self._current_screen)
+
+    def _schedule_recovery_paint(self, screen: str) -> None:
+        """Schedule a one-shot deferred re-paint after a failed render.
+
+        Used when ``_safe_draw`` exhausts its full retry budget on a
+        contended bus — the OLED is left holding partial pixels from
+        the half-flushed canvas. 300ms later most parallel-init i2c
+        windows have closed (PCT2075 temp read ≤ ~50ms, MCP23017
+        scan ≤ ~20ms), so a second attempt usually wins.
+
+        If the user switched screens in the meantime (``_current_screen``
+        no longer matches the captured value), or the screen went to
+        sleep, the callback no-ops — we don't want to over-paint a
+        screen the user already moved past.
+        """
+        loop = self._event_bus._loop
+
+        def _recover() -> None:
+            if self._current_screen != screen or self._sleep:
+                return
+            _LOGGER.debug("OLED scheduled recovery paint for %s", screen)
+            self.clear_display()
+            self.render_display()
+
+        loop.call_later(0.3, _recover)
 
     # --- Shutdown helper methods ---
 
@@ -587,18 +632,41 @@ class Oled:
             _LOGGER.error("Error shutting down device: %s", e)
             self.render_display()
 
-    def clear_display(self) -> None:
+    def clear_display(self) -> bool:
         """Wipe the SH1106 framebuffer to black.
 
-        Called once during handoff from early_oled — any leftover splash from
-        the boot screen would otherwise stay behind the first DisplayManager
-        paint and look like overlapping text. Uses the same lock as draws.
+        Called during handoff from early_oled AND between screen switches in
+        ``_next_screen()``. A failed clear is worse than no clear at all
+        because the next paint partial-flushes over the previous content
+        page-by-page — when the partial paint stalls, the user sees
+        "half new screen, half old screen" (ekran ucięty w połowie).
+
+        Retried 4× with the same exp backoff curve as ``_safe_draw`` so a
+        single bus stall (PCT2075 long temp read, MCP23017 scan, etc.)
+        doesn't leave dirty framebuffer behind. Returns True on success,
+        False if all attempts exhausted (caller can decide whether to
+        skip the paint entirely or defer it).
         """
         with self._draw_lock:
-            try:
-                self._device.clear()
-            except OSError as exc:
-                _LOGGER.warning("OLED clear failed (%s) — first paint will overwrite", exc)
+            for attempt in range(4):
+                try:
+                    self._device.clear()
+                    return True
+                except OSError as exc:
+                    if exc.errno in (11, 110, 121) and attempt < 3:
+                        _LOGGER.debug(
+                            "OLED clear: transient i2c errno %d, retry %d/3",
+                            exc.errno, attempt + 1,
+                        )
+                        time.sleep(min(0.01 * (2 ** attempt), 0.64))
+                        continue
+                    _LOGGER.warning(
+                        "OLED clear failed after %d attempt(s) (%s) — "
+                        "next paint may show ghost pixels",
+                        attempt + 1, exc,
+                    )
+                    return False
+            return False
 
     def render_display(self) -> None:
         """Render display - main method that decides what to display.
