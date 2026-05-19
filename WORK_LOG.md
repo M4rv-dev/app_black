@@ -105,6 +105,98 @@ pattern eliminates that.
 
 ## Timeline
 
+### 2026-05-19 — Session 5 (OLED naprawa + domknięcie luki w 3d52d45)
+
+**Zgłoszenie**: użytkownik — "ekran I2C znowu nie działa, robiliśmy clear przed
+każdym ekranem w poprzedniej sesji". Przekonanie: ktoś (on lub ja) odwrócił logikę
+clear-before-paint z `a46e564`.
+
+**Diagnostyka**:
+1. Diff repo↔device bajt-po-bajcie 6 plików display path (`oled.py`,
+   `early_oled.py`, `core/manager/display.py`, `bonecli.py`, `runner.py`,
+   `manager.py`) — **wszystkie identyczne**. Logika clear-before-paint
+   nienaruszona w repo i na urządzeniu. Niczego w kodzie ekranu nie ruszono.
+2. Journal pokazał **inną przyczynę**: usługa crash-loopowała 11× pod rząd —
+   `ERROR [boneio.bonecli] Failed to load config. Configuration validation
+   failed: - modbus: [{'uart': ['unallowed value /dev/ttyUSB0']}]` →
+   `Exiting with exit code 1`. Ekran nigdy nie dochodził do inicjalizacji
+   bo bonecli wysypywał się ~30s wcześniej w walidacji Cerberus.
+3. Po naprawie #1 wyszedł **drugi, niezależny problem**: OLED `not found at
+   0x3C` / `errno 121 EREMOTEIO` po wystartowaniu usługi (już bez
+   crash-loopu). To była luka pozostawiona przez commit `a46e564`: utwardzono
+   `oled.py` (10-retry + `_safe_draw`) ale **`init_early_oled()` w
+   early_oled.py:66-92 dalej był jednym strzałem bez retry, z logiem tylko
+   na DEBUG** (niewidocznym przy INFO level urządzenia). Na ciepłym starcie
+   (post-deploy / post-crash-loop) magistrala i2c jest gorąca od równoległych
+   sond LM75/INA219/MCP23017/PCT2075 → `sh1106(serial)` rzuca wyjątek →
+   silent return None → DisplayManager dostaje None → fallback 10-retry w
+   `Oled.__init__` też przegrywa na tej samej gorącej magistrali → ekran
+   martwy do następnego zimnego boota.
+
+**Wykonano**:
+
+- ✅ **Fix #1 — `boneio/schema/schema.yaml:322`** (commit `af4bf08`): rozszerzony
+  `allowed:` UART list o `/dev/ttyUSB0`, `/dev/ttyUSB1`, `/dev/ttyACM0`,
+  zsynchronizowany z `UARTS` dict w `boneio/const.py` i JSON schemą frontu
+  (`boneio/webui/schema/modbus.schema.json`) — domyka commit `3d52d45` który
+  pominął runtime'owy schemat. Komentarz w pliku zaznacza cross-file inwariant
+  (3 miejsca trzeba ruszać razem). Deploy → walidacja przechodzi → NRestarts=0.
+- ✅ **Fix #2 — `boneio/hardware/display/early_oled.py`** (commit `9244c6d`):
+  `init_early_oled()` przepisany z 1-strzał-no-retry na pętlę 10 prób z linear
+  backoff 0.2s → 2.0s (~14s), **1:1 mirror** retry-loopa w `Oled.__init__`
+  (`oled.py:149-168`). Te same parametry (count, ramp formula, exception set
+  `DeviceNotFoundError + OSError`) są celowe — oba miejsca probuja tę samą
+  magistralę w tym samym oknie stabilizacji. Logging: success → INFO ("Early
+  OLED initialized [after N retries]"), terminal failure → WARNING z `last_err`,
+  per-attempt transients dalej DEBUG (czysty boot = 1 INFO line). Stary
+  all-DEBUG efektywnie ukrywał awarie na produkcyjnym INFO level — diagnoza
+  dzisiejszej awarii ciągnęła się dłużej niż musiała bo journal milczał o
+  tym co robi `init_early_oled`. Dodany `import time` na top of file.
+- ✅ Deploy + warm-restart verification: po `inv deploy` (bez fizycznego rebootu)
+  journal pokazał happy-path w pełnej kolejności na **gorącej magistrali**:
+  ```
+  23:25:36 INFO [...early_oled]   Early OLED initialized
+  23:25:41 INFO [...display.oled] OLED display reusing early-initialized sh1106 device
+  23:25:42 INFO [...manager.display] OLED display configured successfully
+  23:25:42 INFO [...manager.display] DisplayManager initialized with 9 screens
+  ```
+  — żadnego "Can't configure OLED display". Trwała naprawa potwierdzona w
+  najtrudniejszym scenariuszu; cold reboot z planu okazał się niepotrzebny.
+
+**Architektoniczna konkluzja — wzorzec 3-miejsc dla schemy**:
+Commit `3d52d45` pokazał, że dodanie nowego pola/wartości do walidowanej
+konfiguracji wymaga ruszenia **trzech** miejsc razem:
+1. **Runtime mapping** w `boneio/const.py` lub odpowiedniku — co kod faktycznie
+   robi z wartością.
+2. **Cerberus YAML schema** w `boneio/schema/*.yaml` — walidacja przy starcie
+   bonecli. **To jest gate startowy** — jeśli pominięty, usługa crash-loopuje.
+3. **Frontendowa JSON schema** w `boneio/webui/schema/*.schema.json` — Monaco
+   editor + datalists, plus form code w `frontend/.../UISettings/*Form.tsx`.
+
+Pominięcie #2 daje dokładnie ten failure mode: frontend pozwala wprowadzić
+wartość ("wygląda OK"), config plik się zapisuje, ale runtime ją odrzuca →
+crash-loop. **Sugerowany follow-up**: skrypt CI `check-schema-sync.py` który
+porównuje listę `allowed:` w Cerberus YAML z odpowiadającymi mu enum w JSON
+schemach + const dict — wykryje rozjazd przed commitem.
+
+**Architektoniczna konkluzja — retry budget musi być spójny w obu OLED init**:
+Mając hardcoded retry w `Oled.__init__` ale brak go w `init_early_oled()`
+oznacza że pierwsze ogniwo łańcucha jest słabsze niż fallback. Skoro oba
+miejsca probuja ten sam zasób (sh1106 na 0x3C) w tym samym oknie
+stabilizacji, **muszą mieć ten sam budżet retry** — inaczej wcześniejsze
+ogniwo padnie i diagnostyka spadnie na późniejsze, a to późniejsze zazwyczaj
+ma mniej kontekstu (brak handoff'u, gorętsza magistrala). Wzorzec do
+zapamiętania dla podobnych "early init → main init" handoff'ów.
+
+**Pending / pomysły**:
+- Skrypt CI walidacji synchroniczności schem (Cerberus YAML ↔ JSON schema ↔
+  const dict) — opisany wyżej.
+- Test integracyjny "warm restart resilience" — symuluj 2× restart usługi pod
+  rząd i sprawdź czy OLED dalej żyje. Obecnie zweryfikowane manualnie, ale
+  fajnie by to było w `inv smoke` jako check #6.
+
+---
+
 ### 2026-05-19 — Session 4 (audyt DevOps + UX/UI → program naprawczy)
 
 **Cel**: Całościowy przegląd projektu pod kątem DevOps i UX/UI. Zebranie obserwacji,
