@@ -50,6 +50,8 @@ _HOOKS = (
     "teardown_on_devices_reload",
     "setup_on_devices_reload",
     "try_setup_output",
+    "try_setup_input",
+    "cleanup_inputs",
     "make_reload_handler",
 )
 
@@ -124,6 +126,46 @@ class ModuleRegistry:
                     fn(manager)
                 except Exception:
                     _LOGGER.exception("ModuleRegistry: setup_on_devices_reload FAILED — %s", mod.__name__)
+
+    def try_setup_input(
+        self,
+        manager: "Manager",
+        custom_id: str,
+        ri_cfg: dict,
+        inputs_dict: dict,
+        parsed_actions: dict,
+        ha_discovery_fn: Any,
+    ) -> "bool | None":
+        """Ask each module to claim a remote input row.
+
+        Returns the registration result if a module claims it (``remote_source``
+        matches), so the caller can skip the default ESPHome flow.
+        Returns ``None`` if no module handles the row.
+        """
+        for mod in self._modules:
+            fn = getattr(mod, "try_setup_input", None)
+            if fn is not None:
+                try:
+                    result = fn(manager, custom_id, ri_cfg, inputs_dict, parsed_actions, ha_discovery_fn)
+                    if result is not None:
+                        return result
+                except Exception:
+                    _LOGGER.exception("ModuleRegistry: try_setup_input FAILED — %s", mod.__name__)
+        return None
+
+    def cleanup_inputs(self, inputs_dict: dict) -> None:
+        """Ask each module to clean up its owned inputs before unregistration.
+
+        Called from ``RemoteInputRegistrar.unregister_all`` so modules can
+        flush subscriptions, timers, etc. before the dict entries are deleted.
+        """
+        for mod in self._modules:
+            fn = getattr(mod, "cleanup_inputs", None)
+            if fn is not None:
+                try:
+                    fn(inputs_dict)
+                except Exception:
+                    _LOGGER.exception("ModuleRegistry: cleanup_inputs FAILED — %s", mod.__name__)
 
     def try_setup_output(self, manager: "Manager", out_cfg: dict, entity_id: str) -> bool:
         """Ask each module to claim a remote output row.

@@ -218,6 +218,23 @@ def register_routes(app: object) -> None:
     _register(app)
 
 
+def try_setup_input(
+    manager: "Manager",
+    custom_id: str,
+    ri_cfg: dict,
+    inputs_dict: dict,
+    parsed_actions: dict,
+    ha_discovery_fn: Any,
+) -> "bool | None":
+    """Claim a remote input row if it belongs to this module (ModuleRegistry hook)."""
+    return try_setup_mqtt_input(manager, custom_id, ri_cfg, inputs_dict, parsed_actions, ha_discovery_fn)
+
+
+def cleanup_inputs(inputs_dict: dict) -> None:
+    """Clean up module-owned inputs before unregistration (ModuleRegistry hook)."""
+    cleanup_mqtt_for_registrar(inputs_dict)
+
+
 def try_setup_output(manager: "Manager", out_cfg: dict, entity_id: str) -> bool:
     """Claim a remote output row if it belongs to this module."""
     return try_setup_mqtt_output(manager, out_cfg, entity_id)

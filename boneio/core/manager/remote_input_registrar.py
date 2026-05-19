@@ -159,10 +159,10 @@ class RemoteInputRegistrar:
             else {}
         )
 
-        # Module-provided protocols (e.g. remote_mqtt) own their own factory +
-        # HA discovery + subscribe. If a module claims this row, return early.
-        from boneio.modules.remote_mqtt.manager_integration import try_setup_mqtt_input
-        handled = try_setup_mqtt_input(
+        # Module-provided protocols own their own factory + HA discovery + subscribe.
+        # If a module claims this row, return early.
+        from boneio.modules._registry import ModuleRegistry
+        handled = ModuleRegistry.get().try_setup_input(
             self._manager, custom_id, ri_cfg, inputs_dict, parsed_actions, self._ha_discovery_fn,
         )
         if handled is not None:
@@ -241,8 +241,8 @@ class RemoteInputRegistrar:
         # Module-owned cleanup (subscriptions, timers, etc.) — invoked before
         # the registrar drops its rows, so modules can flush state attached to
         # entries they originally registered.
-        from boneio.modules.remote_mqtt.manager_integration import cleanup_mqtt_for_registrar
-        cleanup_mqtt_for_registrar(inputs_dict)
+        from boneio.modules._registry import ModuleRegistry
+        ModuleRegistry.get().cleanup_inputs(inputs_dict)
 
         to_remove = [
             k for k, v in inputs_dict.items() if isinstance(v, RemoteInputBase)
