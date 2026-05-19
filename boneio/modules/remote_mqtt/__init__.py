@@ -28,6 +28,10 @@ from boneio.modules.remote_mqtt.template import (
     try_parse_json,
 )
 
+# Import manager_integration eagerly so _register_self() runs and this module
+# is registered in ModuleRegistry at import time (required for plugin discovery).
+from boneio.modules.remote_mqtt import manager_integration as _integration  # noqa: F401
+
 __all__ = [
     "PayloadType",
     "ScanResult",

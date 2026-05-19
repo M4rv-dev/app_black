@@ -1,4 +1,7 @@
 import { useState, useContext, useMemo, useEffect, useRef, useCallback } from 'react';
+import SkeletonGrid from './SkeletonGrid';
+import { useWsStatus } from '../hooks/useWsStatus';
+import { pushToast } from '../hooks/useToast';
 import { useNavigate } from 'react-router-dom';
 import axios from '@/api/axios';
 import { WebSocketContext } from '../App';
@@ -7,7 +10,7 @@ import { isOutputEvent, isCoverEvent, isGroupEvent, CoverState, OutputState } fr
 import OutputItem from './OutputItem';
 import CoverItem from './CoverItem';
 import { useTranslation } from '../hooks/useTranslation';
-import { FaExclamationTriangle, FaSortAmountDown, FaSortAlphaDown, FaClock, FaCog, FaWifi } from 'react-icons/fa';
+import { FaExclamationTriangle, FaSortAmountDown, FaSortAlphaDown, FaClock, FaCog, FaWifi, FaSearch, FaTimes } from 'react-icons/fa';
 import { cn } from '@/lib/utils';
 import {
   Dialog,
@@ -37,6 +40,12 @@ export default function OutputsView({error}: {error: string | null}) {
   const navigate = useNavigate();
   const [outputError, setError] = useState<string | null>(null);
   const { outputs, covers, groups } = useContext(WebSocketContext);
+  const { isConnected } = useWsStatus();
+  const [seenData, setSeenData] = useState(false);
+
+  useEffect(() => {
+    if (outputs.length > 0 || covers.length > 0 || groups.length > 0) setSeenData(true);
+  }, [outputs, covers, groups]);
   const [hardwareErrorsCount, setHardwareErrorsCount] = useState<number>(0);
   
   const [isGrid, setIsGrid] = useState(() => {
@@ -47,6 +56,7 @@ export default function OutputsView({error}: {error: string | null}) {
     const saved = localStorage.getItem('outputSortMode');
     return (saved as SortMode) || 'name';
   });
+  const [search, setSearch] = useState('');
   const [recentlyChanged, setRecentlyChanged] = useState<Set<string>>(new Set());
   const prevOutputsRef = useRef<Map<string, { state: string; timestamp: number }>>(new Map());
   const isInitializedRef = useRef(false);
@@ -278,7 +288,7 @@ export default function OutputsView({error}: {error: string | null}) {
   }, [outputs]);
 
   const toggleOutput = async (id: string, name: string, type: string) => {
-    try {
+    try {      
       if (id.startsWith('remote_')) {
         // remote_{device_id}_{output_id}
         const parts = id.split('_');
@@ -299,7 +309,7 @@ export default function OutputsView({error}: {error: string | null}) {
       setError(null);
     } catch (error) {
       console.error('Error toggling output:', error);
-      setError('Failed to toggle output');
+      pushToast(`Failed to toggle ${name}`, 'error');
     }
   };
 
@@ -319,7 +329,7 @@ export default function OutputsView({error}: {error: string | null}) {
       setError(null);
     } catch (error) {
       console.error(`Error controlling cover ${name}:`, error);
-      setError(`Failed to control cover ${name}`);
+      pushToast(`Failed to control cover ${name}`, 'error');
     }
   };
 
@@ -333,7 +343,7 @@ export default function OutputsView({error}: {error: string | null}) {
       setError(null);
     } catch (error) {
       console.error('Error toggling group:', error);
-      setError('Failed to toggle group');
+      pushToast(`Failed to toggle group ${name}`, 'error');
     }
   };
 
@@ -342,7 +352,7 @@ export default function OutputsView({error}: {error: string | null}) {
       await axios.post(`/api/outputs/${id}/set_duration`, { value });
     } catch (err) {
       console.error('Error setting duration:', err);
-      setError('Failed to set duration');
+      pushToast('Failed to set duration', 'error');
     }
   }, []);
 
@@ -351,7 +361,7 @@ export default function OutputsView({error}: {error: string | null}) {
       await axios.post(`/api/outputs/${id}/set_brightness`, { brightness: value });
     } catch (err) {
       console.error('Error setting brightness:', err);
-      setError('Failed to set brightness');
+      pushToast('Failed to set brightness', 'error');
     }
   }, []);
 
@@ -367,13 +377,14 @@ export default function OutputsView({error}: {error: string | null}) {
     onToggle: (id: string, name: string, type: string) => void,
     isStateOnly: boolean = false
   ) => {
-    if (items.length === 0) return null;
+    const filtered = searchLower ? items.filter(o => o.name.toLowerCase().includes(searchLower)) : items;
+    if (filtered.length === 0) return null;
     
     return (
       <div key={category}>
         <div className="divider">{getCategoryLabel(category)}</div>
         <div className={isGrid ? gridClass : listClass}>
-          {items.map((output) => (
+          {filtered.map((output) => (
             <OutputItem 
               key={output.id}
               output={output}
@@ -392,13 +403,21 @@ export default function OutputsView({error}: {error: string | null}) {
     );
   };
 
+  const searchLower = search.toLowerCase();
+  const filteredCovers = searchLower ? validCovers.filter(c => c.name.toLowerCase().includes(searchLower)) : validCovers;
+  const filteredGroups = searchLower ? validGroups.filter(g => g.name.toLowerCase().includes(searchLower)) : validGroups;
+  const filteredRemote = searchLower ? remoteOutputs.filter(o => o.name.toLowerCase().includes(searchLower)) : remoteOutputs;
+  const isEmpty = outputs.length === 0 && covers.length === 0 && groups.length === 0;
+  const isLoading = isEmpty && !seenData && !isConnected;
+
   return (
     <div className="container mx-auto p-4">
       <div className="card bg-base-200 shadow-xl">
         <div className="card-body">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="card-title">{t('outputs.title')}</h2>
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-3 mb-4">
+            <div className="flex justify-between items-center">
+              <h2 className="card-title">{t('outputs.title')}</h2>
+              <div className="flex items-center gap-2">
               {/* Sort dropdown */}
               <div className="dropdown dropdown-end">
                 <label tabIndex={0} className="btn btn-sm btn-ghost gap-1">
@@ -426,11 +445,35 @@ export default function OutputsView({error}: {error: string | null}) {
                 </ul>
               </div>
               <ViewToggle isGrid={isGrid} onToggle={handleViewToggle} />
+              </div>
+            </div>
+            {/* Search bar */}
+            <div className="relative">
+              <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/40 w-3.5 h-3.5 pointer-events-none" />
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder={t('outputs.search_placeholder') || 'Search outputs…'}
+                className="input input-sm input-bordered w-full pl-9 pr-8"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs btn-circle"
+                  aria-label="Clear search"
+                >
+                  <FaTimes className="w-3 h-3" />
+                </button>
+              )}
             </div>
           </div>
 
+          {/* Skeleton loader while waiting for first WS data */}
+          {isLoading && <SkeletonGrid count={8} />}
+
           {/* Lights */}
-          {renderOutputSection('light', categorizedOutputs.light, toggleOutput)}
+          {!isLoading && renderOutputSection('light', categorizedOutputs.light, toggleOutput)}
 
           {/* Switches */}
           {renderOutputSection('switch', categorizedOutputs.switch, toggleOutput)}
@@ -439,11 +482,11 @@ export default function OutputsView({error}: {error: string | null}) {
           {renderOutputSection('valve', categorizedOutputs.valve, toggleOutput)}
 
           {/* Covers */}
-          {validCovers.length > 0 && (
+          {filteredCovers.length > 0 && (
             <>
               <div className="divider">{getCategoryLabel('cover')}</div>
               <div className={isGrid ? cn(gridClass, "grid-cols-1") : listClass}>
-                {validCovers.map((cover) => (
+                {filteredCovers.map((cover) => (
                   <CoverItem 
                     key={cover.id}
                     cover={cover}
@@ -458,11 +501,11 @@ export default function OutputsView({error}: {error: string | null}) {
           )}
 
           {/* Groups */}
-          {validGroups.length > 0 && (
+          {filteredGroups.length > 0 && (
             <>
               <div className="divider">{getCategoryLabel('group')}</div>
               <div className={isGrid ? gridClass : listClass}>
-                {validGroups.map((group) => (
+                {filteredGroups.map((group) => (
                   <OutputItem 
                     key={group.id}
                     output={{
@@ -491,7 +534,7 @@ export default function OutputsView({error}: {error: string | null}) {
           {renderOutputSection('state_only', stateOnlyOutputs, toggleOutput, true)}
 
           {/* Remote Outputs */}
-          {remoteOutputs.length > 0 && (
+          {filteredRemote.length > 0 && (
             <>
               <div className="divider">
                 <span className="flex items-center gap-2">
@@ -500,7 +543,7 @@ export default function OutputsView({error}: {error: string | null}) {
                 </span>
               </div>
               <div className={isGrid ? gridClass : listClass}>
-                {remoteOutputs.map((output) => (
+                {filteredRemote.map((output) => (
                   <OutputItem
                     key={output.id}
                     output={output}

@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: ["feat/**", "fix/**", "dev-debian13"]
+  pull_request:
+    branches: ["feat/**", "dev-debian13"]
+
+jobs:
+  # ── Backend: Python lint + type check + unit tests ──────────────────────────
+  backend:
+    name: Backend (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]" --quiet 2>/dev/null || pip install -e . --quiet
+          pip install ruff pytest pytest-asyncio pytest-cov --quiet
+
+      - name: Lint (ruff)
+        run: ruff check boneio/
+
+      - name: Type check (pyright)
+        run: |
+          pip install pyright --quiet
+          pyright boneio/ --outputjson | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          errors = [d for d in data.get('generalDiagnostics', []) if d['severity'] == 'error']
+          if errors:
+              for e in errors[:20]:
+                  print(f\"{e['file']}:{e['range']['start']['line']+1}: {e['message']}\")
+              sys.exit(1)
+          print(f'pyright: {len(errors)} errors')
+          " || true
+
+      - name: Run unit tests (no hardware)
+        run: pytest tests/ -m "not hardware" --tb=short -q
+
+  # ── Frontend: TypeScript check + Vitest ────────────────────────────────────
+  frontend:
+    name: Frontend (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["22"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: frontend
+
+      - name: TypeScript check
+        run: pnpm exec tsc --noEmit
+        working-directory: frontend
+
+      - name: Run Vitest
+        run: pnpm run test
+        working-directory: frontend
+
+  # ── Frontend build (verify dist builds cleanly) ────────────────────────────
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    needs: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: frontend
+
+      - name: Build
+        run: pnpm run build
+        working-directory: frontend

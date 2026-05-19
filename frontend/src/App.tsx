@@ -17,6 +17,9 @@ import { useWebSocket, StateUpdate, isCoverEvent, InputEvent, OutputEvent, Senso
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { useApiAvailability } from './hooks/useApiAvailability';
 import NotAvailable from './components/NotAvailable';
+import ErrorBanner from './components/ErrorBanner';
+import ErrorBoundary from './components/ErrorBoundary';
+import ToastContainer from './components/ToastContainer';
 import UISettings from './components/UISettings/UISettings';
 import SystemState from './components/UISettings/SystemState';
 import NodeRedView from './components/NodeRedView';
@@ -75,20 +78,14 @@ function AppContent() {
     if (!isAuthenticated && isAuthRequired) return;
     if (!isApiAvailable) return;
     
-    const unsubscribe = addConnectionStateListener((connected) => {
-      if (connected) {
-        // Backend sends initial state on connect, but for reconnects we may need to request it
-        // The backend will send all states via WebSocket messages
-        console.log('WebSocket connected/reconnected');
-      }
+    const unsubscribe = addConnectionStateListener((_connected) => {
+      // Backend sends initial state on connect; reconnect resync handled by backend
     });
     
     return unsubscribe;
   }, [addConnectionStateListener, isAuthenticated, isAuthRequired, isApiAvailable]);
 
   useEffect(() => {
-    console.log("WebSocket state:", { isAuthenticated, isAuthRequired });
-    
     // Clear states when not authenticated and auth is required
     if ((!isAuthenticated && isAuthRequired) || !isApiAvailable) {
       setOutputs([]);
@@ -239,7 +236,7 @@ function AppContent() {
   }
 
   if (error && (isAuthenticated || !isAuthRequired)) {
-    return <div>Error: {error}</div>;
+    return <ErrorBanner message={error} />;
   }
 
   return (
@@ -247,101 +244,127 @@ function AppContent() {
       <Routes>
         <Route path="/" element={
           <ProtectedRoute>
-            <Layout>
-              <OutputsView error={error} />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <OutputsView error={error} />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/inputs" element={
           <ProtectedRoute>
-            <Layout>
-              <InputsView />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <InputsView />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/config" element={
           <ProtectedRoute>
-            <Layout configEditor={true}>
-              <Suspense fallback={
-                <div className="flex items-center justify-center h-full">
-                  <span className="loading loading-spinner loading-lg"></span>
-                </div>
-              }>
-                <ConfigEditor />
-              </Suspense>
-            </Layout>
+            <ErrorBoundary>
+              <Layout configEditor={true}>
+                <Suspense fallback={
+                  <div className="flex items-center justify-center h-full">
+                    <span className="loading loading-spinner loading-lg"></span>
+                  </div>
+                }>
+                  <ConfigEditor />
+                </Suspense>
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         {/* ConfigEditor2 (UISettings) - Temporarily disabled due to JSON Schema issues */}
         {/* TODO: Re-enable when JSON Schema validation problems are resolved */}
         <Route path="/settings" element={
           <ProtectedRoute>
-            <Layout>
-              <UISettings />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <UISettings />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/settings/:section" element={
           <ProtectedRoute>
-            <Layout>
-              <UISettings />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <UISettings />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/logs" element={
           <ProtectedRoute>
-            <Layout>
-              <LogViewer />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <LogViewer />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/sensors" element={
           <ProtectedRoute>
-            <Layout>
-              <SensorView />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <SensorView />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/modbus" element={
           <ProtectedRoute>
-            <Layout>
-              <ModbusView />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <ModbusView />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/templates" element={
           <ProtectedRoute>
-            <Layout>
-              <TemplatesView />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <TemplatesView />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/tools" element={
           <ProtectedRoute>
-            <Layout>
-              <Tools />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <Tools />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/help" element={
           <ProtectedRoute>
-            <Layout>
-              <HelpView />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <HelpView />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/system" element={
           <ProtectedRoute>
-            <Layout>
-              <SystemState />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <SystemState />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
         <Route path="/nodered" element={
           <ProtectedRoute>
-            <Layout>
-              <NodeRedView />
-            </Layout>
+            <ErrorBoundary>
+              <Layout>
+                <NodeRedView />
+              </Layout>
+            </ErrorBoundary>
           </ProtectedRoute>
         } />
       </Routes>
@@ -356,6 +379,7 @@ export default function App() {
         <ConfigProvider>
           <TranslationProvider>
             <AppContent />
+            <ToastContainer />
           </TranslationProvider>
         </ConfigProvider>
       </AuthProvider>

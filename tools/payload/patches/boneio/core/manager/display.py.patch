@@ -1,0 +1,38 @@
+diff --git a/boneio/core/manager/display.py b/boneio/core/manager/display.py
+index 61fb7fa..069382d 100644
+--- a/boneio/core/manager/display.py
++++ b/boneio/core/manager/display.py
+@@ -195,13 +195,28 @@ class DisplayManager:
+                     self._manager.inputs._inputs["oled_button"] = oled_button
+                     _LOGGER.info("OLED button configured on pin %s", OLED_PIN)
+             
+-            self._oled.render_display()
+-            
+-            # Signal early_oled to stop rendering — DisplayManager owns the screen now
++            # Signal early_oled to stop rendering BEFORE our first draw — otherwise
++            # both writers race on i2c-2 and the kernel returns EREMOTEIO on the
++            # first canvas() that DisplayManager sends. handoff() is a flag flip,
++            # not a write, so it's safe to call before the first paint.
+             from boneio.hardware.display.early_oled import handoff
+             handoff()
+-            
+-            _LOGGER.info("OLED display configured successfully")
++
++            # First paint can transiently fail on a busy i2c bus while other
++            # drivers are still settling (LM75, INA219, MCP23017 all initialise
++            # in parallel). Don't let that kill the whole DisplayManager — the
++            # periodic refresh in Oled._update_display has its own retry path
++            # and will repaint shortly. Use a clear-then-paint sequence so the
++            # previous early_oled splash doesn't bleed into the first frame.
++            try:
++                self._oled.clear_display()
++                self._oled.render_display()
++                _LOGGER.info("OLED display configured successfully")
++            except OSError as draw_err:
++                _LOGGER.warning(
++                    "OLED first paint failed (%s) — periodic refresh will retry shortly",
++                    draw_err,
++                )
+             
+         except (GPIOInputException, I2CError) as err:
+             _LOGGER.error("Can't configure OLED display: %s", err)

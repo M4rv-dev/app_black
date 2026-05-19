@@ -1,0 +1,60 @@
+diff --git a/frontend/src/components/UISettings/helpers/itemValidation.ts b/frontend/src/components/UISettings/helpers/itemValidation.ts
+index 05c36be..c1c274a 100644
+--- a/frontend/src/components/UISettings/helpers/itemValidation.ts
++++ b/frontend/src/components/UISettings/helpers/itemValidation.ts
+@@ -2,12 +2,20 @@
+  * Section-specific validation for ArrayTableWidget save operations.
+  * Determines required fields and validates items before saving.
+  */
++import { getOutputStats, isExpanderOutput } from '../modules/expander';
++import type { ExpanderOutputStats } from '../modules/expander';
+ 
+ interface ValidationResult {
+   isValid: boolean;
+   errorMessage: string;
+ }
+ 
++/** @deprecated Use ExpanderOutputStats from modules/expander instead. */
++export type OutputStats = ExpanderOutputStats;
++
++/** Re-exported for backwards compatibility with consumers importing from this file. */
++export { getOutputStats };
++
+ /**
+  * Validate an item before saving based on section type.
+  * Returns validation result with error message if invalid.
+@@ -36,7 +44,11 @@ export function validateItem(
+       return { isValid: !!(dataToSave.id || dataToSave.name), errorMessage: t('array_table_widget.id_required') };
+ 
+     case 'output':
+-      return { isValid: !!dataToSave.boneio_output, errorMessage: t('array_table_widget.boneio_output_required') };
++      // Accept either boneio_output (board) or id starting with EX_ (expander)
++      return {
++        isValid: !!dataToSave.boneio_output || isExpanderOutput(dataToSave),
++        errorMessage: t('array_table_widget.boneio_output_required'),
++      };
+ 
+     case 'output_group': {
+       const hasId = !!dataToSave.id;
+@@ -136,16 +148,11 @@ export function areAllItemsUsed(
+   allEvents: any[],
+ ): boolean {
+   if (sectionType === 'output') {
+-    const type = deviceType?.toLowerCase() || '';
+-    let outputCount: number;
+-    if (type.includes('32') || type.includes('cm')) {
+-      outputCount = 32;
+-    } else if (type.includes('24')) {
+-      outputCount = 24;
+-    } else {
+-      outputCount = 49;
+-    }
+-    return value.filter(o => o.boneio_output).length >= outputCount;
++    const { boardCapacity, boardUsed, expanderCapacity, expanderUsed } = getOutputStats(value, deviceType);
++    const boardFull = boardUsed >= boardCapacity;
++    const expanderFull = expanderCapacity === 0 || expanderUsed >= expanderCapacity;
++    // Blocked only when both are full (or no expander configured → only board matters)
++    return expanderCapacity === 0 ? boardFull : boardFull && expanderFull;
+   }
+ 
+   if (sectionType === 'binary_sensor' || sectionType === 'event' || sectionType === 'local_inputs') {

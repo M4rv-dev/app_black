@@ -1,0 +1,50 @@
+diff --git a/frontend/src/components/UISettings/BoneIOForm.tsx b/frontend/src/components/UISettings/BoneIOForm.tsx
+index 2c0a8a9..3abd03d 100644
+--- a/frontend/src/components/UISettings/BoneIOForm.tsx
++++ b/frontend/src/components/UISettings/BoneIOForm.tsx
+@@ -3,6 +3,7 @@ import axios from '@/api/axios';
+ import { useTranslation } from '@/hooks/useTranslation';
+ import { FaExclamationTriangle } from 'react-icons/fa';
+ import HelpLabel from './components/HelpLabel';
++import { ExpanderManager } from './modules/expander';
+ 
+ interface ExampleFile {
+   filename: string;
+@@ -22,13 +23,22 @@ interface ValidationResult {
+ interface BoneIOFormProps {
+   data: any;
+   onChange: (data: any) => void;
++  allOutputs?: any[];
++  allEvents?: any[];
++  allBinarySensors?: any[];
+ }
+ 
+ /**
+  * Custom form for boneIO section configuration.
+  * Fields: name, version, device_type
+  */
+-const BoneIOForm: React.FC<BoneIOFormProps> = ({ data, onChange }) => {
++const BoneIOForm: React.FC<BoneIOFormProps> = ({
++  data,
++  onChange,
++  allOutputs = [],
++  allEvents = [],
++  allBinarySensors = [],
++}) => {
+   const { t } = useTranslation();
+   const [showWarningModal, setShowWarningModal] = useState(false);
+   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+@@ -196,6 +206,13 @@ const BoneIOForm: React.FC<BoneIOFormProps> = ({ data, onChange }) => {
+         <HelpLabel>{t('boneio_config.device_type_help')}</HelpLabel>
+       </div>
+ 
++      {/* Expansion board — fully encapsulated module */}
++      <ExpanderManager
++        allOutputs={allOutputs}
++        allEvents={allEvents}
++        allBinarySensors={allBinarySensors}
++      />
++
+       {/* HA Child Devices (experimental) */}
+       <div className="form-control">
+         <label className="label cursor-pointer justify-start gap-3">

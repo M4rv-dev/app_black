@@ -105,6 +105,293 @@ pattern eliminates that.
 
 ## Timeline
 
+### 2026-05-19 — Session 4 (audyt DevOps + UX/UI → program naprawczy)
+
+**Cel**: Całościowy przegląd projektu pod kątem DevOps i UX/UI. Zebranie obserwacji,
+zaplanowanie programu naprawczego, zaktualizowanie WORK_LOG.
+
+**Kontekst**: Zainstalowano globalne skille Windsurf:
+- `~/.codeium/windsurf/skills/ux-ui.md` — wzorce UX/UI dla BoneIO (IoT dark-mode)
+- `~/.codeium/windsurf/skills/frontend-dev.md` — konwencje React 19 + Tailwind v4
+
+---
+
+#### Audit: DevOps
+
+**Mocne strony (co działa dobrze)**:
+- ✅ `tasks.py` (Invoke) — solidny pipeline: snapshot → rsync → restart → healthcheck → rollback
+- ✅ Sekrety poza repo (keyring + env var, `deploy_backend.sh` w `.gitignore`)
+- ✅ `inv smoke` — automatyczny test dymny po deploy (service + HTTP + log scan)
+- ✅ `inv rollback` — 3 snapshot'y z GC, swap atomowy
+- ✅ `inv regen-schemas --sync-back` — regeneracja JSON schema na ARM64 + sync
+- ✅ Moduły (`modules/expander/`, `modules/remote_mqtt/`) — zero konfliktów przy merge upstream dev3+dev4
+- ✅ `pyproject.toml` + Ruff + Pyright skonfigurowane
+- ✅ `pytest` skonfigurowany w `pyproject.toml`, asyncio_mode=auto
+
+**Problemy zidentyfikowane**:
+- ❌ **Brak CI/CD** — `.github/workflows/` nie istnieje. Każdy push jest niesprawdzony do czasu ręcznego deploy'u. TESTING_STRATEGY.md ma gotowy przepis, ale nie jest zaimplementowany.
+- ❌ **`tests/` praktycznie puste** — `unit/` pusty, `mocks/` pusty, `legacy_hardware/` pusty. `TESTING_CHECKLIST.md` i `TESTING_STRATEGY.md` to dokumenty aspiracyjne — żadne testy z Etapu 1-5 nie zostały zaimplementowane. Wyjątek: `test_py313_compatibility.py` + jeden test multiclick.
+- ❌ **`deploy_backend.sh` nadal w repo** — OPS.md mówi "usuń", ale plik wciąż istnieje (gitignored, ale nadal w workdir jako legacy fallback).
+- ❌ **Frontend build nie wchodzi do deploy pipeline** — `inv deploy` wysyła tylko backend Python. Zbudowany frontend (`boneio/webui/frontend-dist/`) musi być ręcznie commitowany lub budowany osobno. Brak zadania `inv build-frontend` ani `inv deploy-full`.
+- ⚠️ **`StrictHostKeyChecking=no`** — w ssh_opts — wygodne, ale podatne na MITM w środowiskach shared. Akceptowalne dla home lab, ale warto to odnotować.
+- ⚠️ **Brak healthcheck frontendu w smoke** — `inv smoke` sprawdza `:8090/` (backend HTTP), ale nie weryfikuje że SPA się ładuje (nie sprawdza `/api/state` ani WebSocket handshake).
+- ⚠️ **Brak `inv build-frontend`** — developer musi pamiętać o ręcznym `cd frontend && pnpm build` przed deploy'em jeśli zmienił UI.
+
+---
+
+#### Audit: UX/UI
+
+**Mocne strony**:
+- ✅ DaisyUI v5 + Tailwind v4 + shadcn/ui — nowoczesny, spójny design system
+- ✅ `index.css` — solidny `shadcn → DaisyUI` CSS variable bridge dla stacked dialogs
+- ✅ Motywy light/dark z custom OKLCH paletą
+- ✅ Placeholder styling (italic + 50% opacity) — odróżnianie hint od wartości
+- ✅ Module pattern dla komponentów (`modules/expander/`, `modules/remote_mqtt/`) — logika w hookach
+- ✅ Lazy loading Monaco (ConfigEditor) — poza initial bundle
+- ✅ i18n — pl/en (+ inne), `useTranslation` used consistently
+- ✅ `aria-expanded`, `role="button"`, `tabIndex` na tree branches (sesja 3)
+- ✅ React Router v7 + lazy routes
+
+**Problemy zidentyfikowane**:
+
+**[P1 — Krytyczne]**
+- ❌ **`UISettings.tsx` — 54 KB / ~1800 linii** — jeden plik z całą logiką Settings (routing sekcji, state, API calls, renderowanie). To ta sama klasa problemu co `SystemState.tsx` przed refaktoringiem. `REFACTORING.md` opisuje podział `SystemState`, ale sam `UISettings.tsx` to właściwy problem.
+- ❌ **`App.tsx:241` — `<div>Error: {error}</div>`** — surowy error div bez stylingu, bez retry button, bez klasy komponentu. Niezgodne z UX guidelines (error boundary + user-friendly message).
+- ❌ **`App.tsx:83` — `console.log` w produkcji** — dwa `console.log` w `AppContent` (linia 83, 90) powinny być usunięte lub zamienione na flagi dev.
+- ❌ **Brak Error Boundary na poziomie route'ów** — crash w dowolnym komponencie wysadza całe SPA. Powinna być `<ErrorBoundary>` owijająca każdy `<Layout>`.
+
+**[P2 — Poważne]**
+- ⚠️ **Pliki >1000 linii bez modułowego podziału**:
+  - `UISettings.tsx` — 54 632 B
+  - `RemoteInputForm.tsx` — 31 511 B
+  - `RemoteOutputForm.tsx` — 33 088 B
+  - `RemoteDeviceForm.tsx` — 31 271 B
+  - `AlarmPanelForm.tsx` — 30 535 B
+  - `IrrigationForm.tsx` — 29 905 B
+  - `OutputForm.tsx` — 34 320 B
+  - `EventForm.tsx` — 34 789 B
+  - `SystemState.tsx` — 33 196 B (częściowy refactoring opisany w REFACTORING.md, ale nie wykonany)
+  - `ModbusHelper.tsx` — 35 556 B
+- ⚠️ **Brak skeleton loaders** — widoki (OutputsView, InputsView, SensorView) pokazują spinner lub pusty ekran podczas ładowania. Powinny być skeleton cards.
+- ⚠️ **Brak `<Suspense>` na większości route'ów** — tylko ConfigEditor ma Suspense. Inne lazy-loadowane komponenty crashują bez fallbacku.
+- ⚠️ **WebSocket status nie widoczny dla usera** — `useWebSocket` zarządza połączeniem, ale UI nie pokazuje wskaźnika stanu połączenia (connected/reconnecting/offline).
+
+**[P3 — Ulepszenia]**
+- ℹ️ **`OutputsView.tsx` i `InputsView.tsx` — brak filtrowania/wyszukiwania** w widoku głównym gdy jest dużo wyjść (setki relayów).
+- ℹ️ **Brak toast notifications** — błędy API pokazywane są inline lub jako alerty bez auto-dismiss.
+- ℹ️ **`Navigation.tsx` — 11 KB** — może wymagać podziału gdy dodamy więcej sekcji.
+- ℹ️ **Brak PWA offline fallback page** — `vite-plugin-pwa` jest zainstalowany, ale nie ma konfiguracji offline fallback.
+- ℹ️ **`themes.js`** — plik JavaScript w projekcie TypeScript, powinien być `.ts`.
+
+---
+
+#### Program naprawczy — Priorytety
+
+**FAZA A — DevOps (krytyczne, łatwe do wdrożenia)**
+
+| # | Zadanie | Trudność | Wpływ |
+|---|---------|----------|-------|
+| A1 | GitHub Actions CI — `pytest -m "not hardware"` + `tsc --noEmit` na push | Średnia | Wysoki |
+| A2 | Uzupełnić `tests/unit/` — zacząć od `test_timeperiod.py`, `test_yaml_util.py` (Etap 2 z TESTING_STRATEGY.md) | Średnia | Wysoki |
+| A3 | `inv build-frontend` + `inv deploy-full` — dodać frontend build do pipeline | Niska | Średni |
+| A4 | `inv smoke` — dodać `/api/state` probe + WebSocket handshake check | Niska | Średni |
+| A5 | Usunąć `deploy_backend.sh` z workdir (zostawiony jako gitignored, ale dez konfuzję) | Niska | Niski |
+
+**FAZA B — UX/UI Frontend (P1 — błędy)**
+
+| # | Zadanie | Trudność | Wpływ |
+|---|---------|----------|-------|
+| B1 | `App.tsx` — zastąpić `<div>Error: {error}</div>` komponentem `<ErrorBanner>` | Niska | Wysoki |
+| B2 | `App.tsx` — usunąć `console.log` z AppContent | Niska | Niski |
+| B3 | Dodać `<ErrorBoundary>` na poziomie każdego route'u | Średnia | Wysoki |
+| B4 | WebSocket status indicator — badge w nawigacji (connected/reconnecting/offline) | Średnia | Wysoki |
+
+**FAZA C — UX/UI Frontend (P2 — refaktoring)**
+
+| # | Zadanie | Trudność | Wpływ |
+|---|---------|----------|-------|
+| C1 | `SystemState.tsx` — dokończyć refaktoring wg REFACTORING.md (hooki + sekcje) | Wysoka | Średni |
+| C2 | Skeleton loaders dla OutputsView / InputsView / SensorView | Średnia | Wysoki |
+| C3 | Toast notification system (zamiast inline error divów) | Średnia | Wysoki |
+| C4 | Filtr/wyszukiwarka w OutputsView i InputsView | Średnia | Wysoki |
+
+**FAZA D — Testy (uzupełnienie)**
+
+| # | Zadanie | Trudność | Wpływ |
+|---|---------|----------|-------|
+| D1 | Zaimplementować Etap 1 z TESTING_STRATEGY.md (infrastruktura: conftest, mocki) | Średnia | Wysoki |
+| D2 | Testy jednostkowe: `test_timeperiod.py`, `test_filter.py`, `test_yaml_util.py` | Niska | Wysoki |
+| D3 | Testy Vitest dla hooków frontendowych (`useRelayControl`, `useWebSocket`) | Średnia | Średni |
+| D4 | Testy integracyjne: `test_mqtt_flow.py` z mockami | Wysoka | Wysoki |
+
+**Kolejność wykonania (rekomendowana)**:
+`B1 → B2 → B3` (szybkie, wysokie ryzyko) → `A3` (deploy pipeline) → `A1` (CI) → `B4` → `C2` → `C3` → `A2+D1+D2` (razem) → `C1` → `C4`
+
+---
+
+**Wykonano w tej sesji**:
+- ✅ B1 — `ErrorBanner.tsx` (nowy komponent) + zastąpienie `<div>Error: {error}</div>` w `App.tsx`
+- ✅ B2 — usunięto `console.log` z `AppContent` (linie 83, 90), `_connected` param z pustym callbackiem
+- ✅ B3 — `ErrorBoundary.tsx` (nowy komponent class-based) + owinięcie wszystkich 12 route'ów
+- ✅ `tsc --noEmit` — czyste
+
+- ✅ A3 — `build_frontend` + `deploy_full` dodane do `tasks.py`; `import shutil` na górze pliku; OPS.md zaktualizowany (`inv deploy-full` jako preferred command); `inv --list` — oba taski widoczne
+- ✅ A1 — `.github/workflows/ci.yml` — 3 joby: `backend` (ruff + pyright + pytest -m "not hardware"), `frontend` (tsc --noEmit + vitest), `frontend-build` (pnpm build); triggeruje na push/PR do `feat/**`, `fix/**`, `dev-debian13`
+- ✅ B4 — `useWsStatus.ts` (hook subskrybujący globalny stan WS bez lifecycle) + `addGlobalConnectionStateListener` wyeksportowane z `useWebSocket.ts` + `WsStatusBadge` w `Navigation.tsx` (zielona/czerwona pulsująca kropka z tooltip); `tsc --noEmit` czyste
+
+- ✅ C2 — `SkeletonGrid.tsx` (reużywalny komponent) + skeleton w `OutputsView`, `InputsView`, `SensorView`; logika: pokazuj skeleton gdy `!seenData && !isConnected`; `tsc --noEmit` czyste
+- ✅ security — usunięto `.claude/settings.local.json` z hasłem w plaintext; hasło przeniesione do macOS Keychain; `.claude/` dodany do `.gitignore`
+
+- ✅ C3 — `useToast.ts` (globalny singleton, `pushToast` callable z dowolnego miejsca) + `ToastContainer.tsx` (DaisyUI alert, auto-dismiss 4s, X button) montowany w `App`; błędy API w `OutputsView` (toggle, cover, group, duration, brightness) → `pushToast(..., 'error')`; `tsc --noEmit` czyste
+
+- ✅ A2 — `inv smoke` rozszerzony o check 4 (`/api/version` → JSON) + check 5 (WS handshake via `websockets.asyncio.client`, temp file); wszystkie 5 checków zielone na żywym urządzeniu
+
+- ✅ D1 — `inv test` (nowy task) — rsync `boneio/` + `tests/` → `/tmp/boneio_tests` na urządzeniu, aktivacja venv, pytest; **396 passed, 0 failed** na żywym urządzeniu (arm64 Debian)
+
+**Następna sesja**: kolejne zadania z backlogu.
+
+---
+
+### 2026-05-18 — Session 3 (remote MQTT sensors + module isolation refactor)
+
+**Goal**: add generic MQTT sensor support end-to-end, then refactor the whole
+remote_mqtt stack so it lives entirely inside `boneio/modules/remote_mqtt/`
+with ≤ ~25 lines of injection in upstream files — same isolation level as
+the expander module.
+
+**Done — feature**:
+* `MQTTGenericSensor` class + factory (subscribe → render Jinja2 → coerce to
+  float/str → publish to local boneIO sensor topic → emit `SensorEvent`).
+* New top-level config section `remote_sensors:` referenced by `device_id +
+  sensor_id` (mirrors the ESPHome remote-input pattern).
+* `mqtt.sensors[]` declared on the device's catalog (same form as inputs /
+  outputs).
+* HA discovery wired through `ha_availabilty_message` with `device_class`,
+  `state_class`, `unit_of_measurement` overrides.
+* `RemoteSensorForm` + `RemoteSensorTable` for the UI (predefined unit /
+  device_class via Select + datalist).
+* `MqttTopicTree` — collapsible accordion replacing the flat scan table;
+  per-leaf `+ Input / + Output / + Sensor` buttons + per-branch
+  `Use as prefix`.
+* Per-section "Browse MQTT broker…" merged into one top-level button (user
+  feedback — section buttons were redundant in the device-centric flow).
+
+**Done — refactor (R-A → R-H)**:
+1. **R-A** `boneio/core/config/yaml_util.py:_get_schema()` now applies
+   module-provided schema extensions at first load. Modules drop a
+   `schema_extension.yaml` at their root → it's deep-merged into the
+   loaded Cerberus schema dict. Zero upstream YAML edits needed for new
+   protocols.
+2. **R-B** Removed 113 lines of MQTT-specific fields from
+   `boneio/schema/remote_devices.yaml` → file is now byte-identical to
+   upstream. All fields moved to
+   `boneio/modules/remote_mqtt/schema_extension.yaml`.
+3. **R-C** Deleted root-level `boneio/schema/remote_sensors.yaml`;
+   `schema.yaml` no longer references it. The section is added by the
+   module's `schema_extension.yaml`.
+4. **R-D** `manager.py` lost ~100 lines: `register_remote_sensors`,
+   `unregister_remote_sensors`, `_reload_remote_sensors`, and the HA
+   discovery closure all moved to
+   `boneio/modules/remote_mqtt/manager_integration.py`. `manager.py` keeps
+   a single 4-line hook (`setup`, `teardown_on_devices_reload`,
+   `setup_on_devices_reload`) and a 2-line lambda in the reload-dispatcher
+   dict. The `remote_source == "mqtt"` branch in `register_remote_outputs`
+   collapsed to `if try_setup_mqtt_output(...): continue`.
+5. **R-E** `remote_input_registrar.py` reduced to 2 thin dispatch calls:
+   `try_setup_mqtt_input` (setup) and `cleanup_mqtt_for_registrar`
+   (unregister). All MQTT lifecycle is module-side.
+6. **R-F** `RemoteSensorForm.tsx` + `RemoteSensorTable.tsx` moved into
+   `frontend/src/components/UISettings/modules/remote_mqtt/{forms,tables}/`.
+   `FormRenderer` / `TableRenderer` keep one-line imports + one-line
+   dispatch (same pattern as expander).
+7. **R-G** `schema_converter.main()` now uses `_get_schema()` so the
+   pre-generated JSON schemas under `boneio/webui/schema/` include the
+   module-merged fields. Regenerated all section files on the device
+   (arm64 native) and rsync'd back to the repo. New files:
+   `remote_inputs.schema.json`, `remote_outputs.schema.json`,
+   `remote_sensors.schema.json`.
+8. **R-H** Deploy → invalidated config disk cache → full Cerberus
+   validation passed against the module-merged schema. Live logs show
+   `Schema: applied extension from modules/remote_mqtt` at startup,
+   followed by the normal input/output/sensor registration on the alarm
+   device. Anti-leak grep (`MQTTGeneric*`, `remote_source.*mqtt`) returns
+   only 2 hits in upstream files: one comment in `manager.py` and one
+   docstring enum in `components/output/remote.py` — zero logic.
+
+**UX polish committed alongside**:
+* Global placeholder italic + 50% opacity in `index.css` (previously
+  placeholders blended with values).
+* `shadcn → DaisyUI` CSS variable bridge (`--background`,
+  `--muted-foreground`, etc.) → stacked dialogs now have solid
+  `bg-base-100` instead of bleeding through.
+* `[data-slot="dialog-content"]` solid background `!important` because
+  Tailwind v4's `bg-background` doesn't reliably resolve without `@theme`.
+* `<datalist>` autocomplete on the device-catalog sensors table for unit
+  and device_class (compact, no Select-per-cell weight).
+* Topic-tree leaf actions changed `+ in / + out / + sens` → full words
+  (`+ Input / + Output / + Sensor`) with `flex-wrap` for narrow widths.
+* Tree branches got `role="button"` + `tabIndex={0}` + `aria-expanded`
+  for keyboard nav.
+
+**Tooling**:
+* Created `~/.claude/agents/ux-reviewer.md` — review-only subagent for
+  post-write UX critique.
+* Created `~/.claude/agents/frontend-architect.md` — proactive guidance
+  for React + Tailwind v4 + DaisyUI + shadcn patterns. Use before writing
+  UI, not after.
+
+**GitHub housekeeping** (also today):
+* Closed public PR #67 (M4rv-dev → boneIO-eu) — was leaking our private
+  branch into upstream notifications.
+* Detach attempt via `gh api -X PATCH ... fork=false` ignored by GitHub
+  REST. Decided to leave the fork as-is (PR closed + `git push origin`
+  locally disabled = no further notifications upstream). Repo stays
+  public but no longer signals work-in-progress to upstream maintainers.
+
+**Architecture metrics after refactor**:
+| File | lines vs upstream tag `8f1a21c` |
+|---|---|
+| `boneio/schema/remote_devices.yaml` | **0** (was +113) |
+| `boneio/schema/schema.yaml` | **0** (was +3) |
+| `boneio/core/manager/manager.py` | ~13 added (down from ~120) |
+| `boneio/core/manager/remote_input_registrar.py` | ~13 added (down from ~26) |
+| `boneio/core/config/yaml_util.py` | +56 (one-off, generic, reusable by future modules) |
+| Frontend Remote*Form upstream conditionals | unchanged (each ~30 lines — thin dispatch) |
+
+**Verified on device**: existing config with alarm_ropam (1 input + 1 output
++ 1 sensor on `n64/99/*`) registered cleanly on a cold start after disk
+cache invalidation. MQTT publish on `n64/99/cmd/out/6` confirmed via journal
+on toggle. Sensor publishes to `boneio/blk174d77/sensor/alarm_ropam_temp1`
+in `{"state": <float>}` form — HA picked it up via discovery.
+
+### 2026-05-17 — Session 2 (remote_mqtt module: generic MQTT device support)
+
+**Goal**: Add support for arbitrary MQTT-enabled devices (ROPAM alarm panels, third-party sensors, etc.) that don't follow boneIO's topic convention. Scan broker → map topics to entities → Jinja2 `value_template` extraction.
+
+**Scope decisions made up-front** (recorded in plan file):
+1. One topic → one entity (multiple `remote_inputs` can subscribe the same topic with different templates).
+2. Single broker only — multi-broker deferred (MVP).
+3. Jinja2 `value_template` (consistent with HA discovery already used in `integration/homeassistant.py:239`).
+
+**Done — phases 0 → 6 of remote_mqtt module**:
+
+* Phase 0 (`24a3c40`) — scaffold `modules/remote_mqtt/` (backend + frontend) with types/constants/helpers
+* Phase 1 (`8b4af6c`) — `POST /api/mqtt/scan` endpoint with wildcard subscribe + collect-and-classify. **Verified live**: scan `#` returned 405 topics in 2s including ROPAM `n64/99/in1..in12`.
+* Phase 2 (`3c20007`) — `MqttScanDialog` UI: pattern + duration inputs, results table with type badges, filter, expandable rows.
+* Phase 3 (`4ffc39b`) — Jinja2 evaluator (sandboxed, lazy-loaded), `POST /api/mqtt/test-template`, `MqttTopicInspector` with JSON tree + clickable path picker + live debounced preview. Added `Jinja2>=3.1.0` to `pyproject.toml` + installed on device venv.
+* Phase 4 (`0ec5d61`) — `MQTTGenericInput(RemoteInputBase)`: subscribes to topic, evaluates `value_template`, coerces to bool, emits `InputEvent`. **Verified live**: tmp config snippet registered `alarm_in1` → log confirmed `"MQTTGenericInput 'alarm_in1' subscribed to topic 'n64/99/in1'"`.
+* Phase 5 (`c1ba5b9`) — `MQTTGenericOutput(RemoteOutputBase)`: publishes `command_template` on turn_on/off, optional `state_topic` subscription for real-device state sync. **Verified live**: tmp config snippet registered `alarm_out1` → log confirmed `"Registered MQTT remote output 'alarm_out1' (topic=..., state_topic=...)"`.
+* Phase 6 (`0d57bd3`) — `MqttRemoteInputFields` + `MqttRemoteOutputFields` Presentational components: swap in for the `input_id`/`output_id` dropdowns when `remote_source === 'mqtt'`. Live preview reuses backend `/api/mqtt/test-template`. Scan-broker shortcut button included.
+
+**Files**:
+* New under `frontend/.../modules/remote_mqtt/` — 16 files, 1263 lines (types + constants + helpers + 5 hooks + 5 components + index.ts).
+* New under `boneio/modules/remote_mqtt/` — 5 files, 924 lines (`__init__.py` lazy API, `scanner.py`, `template.py`, `input.py`, `routes.py`, `output.py`).
+* Touched upstream: 9 files, +227 lines net (mostly schema YAML additions). Largest single touch is +89 lines in `RemoteInputForm.tsx` (drop-in swap of `input_id` block). The rest are pure 3–13-line injections.
+
+**Architecture (validated again)**:
+* Backend module's `__init__.py` lazy-loads FastAPI / Jinja2 / RemoteInputBase / RemoteOutputBase via `__getattr__` — pure helpers (scanner classifier, JSON parser) stay import-cheap.
+* Two factory functions (`setup_remote_input`, `setup_remote_output`) live in the module and are called by upstream registrars/manager with 3-line dispatch blocks — full instantiation + HA discovery wiring lives in the module.
+
 ### 2026-05-18 — Session 3 (remote MQTT sensors + module isolation refactor)
 
 **Goal**: add generic MQTT sensor support end-to-end, then refactor the whole

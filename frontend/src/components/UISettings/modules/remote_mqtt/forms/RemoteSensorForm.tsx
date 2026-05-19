@@ -228,7 +228,8 @@ const RemoteSensorForm: React.FC<RemoteSensorFormProps> = ({
       />
 
       {activeTab === 'basic' && (
-        <div className="space-y-3">
+        <fieldset className="fieldset border border-base-300 rounded-box p-4 space-y-3">
+          <legend className="fieldset-legend">{t('settings.basic_settings') || 'Podstawowe'}</legend>
           {/* Display name */}
           <div className="form-control">
             <label className="label py-1">
@@ -358,7 +359,8 @@ const RemoteSensorForm: React.FC<RemoteSensorFormProps> = ({
           </div>
 
           {/* show_in_ha */}
-          <div className="form-control">
+          <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-3">
+            <legend className="fieldset-legend">{t('inputs.forward_to_ha') || 'Forward to HA'}</legend>
             <label className="label cursor-pointer justify-start gap-2 py-1">
               <input
                 type="checkbox"
@@ -366,20 +368,18 @@ const RemoteSensorForm: React.FC<RemoteSensorFormProps> = ({
                 checked={!!data.show_in_ha}
                 onChange={e => updateField('show_in_ha', e.target.checked || undefined)}
               />
-              <span className="label-text font-medium">{t('remote_sensors.show_in_ha') || 'Forward to Home Assistant'}</span>
-            </label>
-            <label className="label py-0">
-              <span className="label-text-alt wrap-break-word">
+              <span className="label-text wrap-break-word">
                 {t('remote_sensors.show_in_ha_hint') ||
                  'Publish HA autodiscovery so the sensor appears in Home Assistant.'}
               </span>
             </label>
-          </div>
-        </div>
+          </fieldset>
+        </fieldset>
       )}
 
       {activeTab === 'advanced' && (
-        <div className="space-y-3">
+        <fieldset className="fieldset border border-base-300 rounded-box p-4 space-y-3">
+          <legend className="fieldset-legend">{t('settings.advanced_settings') || 'Zaawansowane'}</legend>
           {/* Unit override — predefined list, fallback to custom input */}
           <UnitPicker
             value={data.unit_of_measurement}
@@ -430,7 +430,7 @@ const RemoteSensorForm: React.FC<RemoteSensorFormProps> = ({
               </SelectContent>
             </Select>
           </div>
-        </div>
+        </fieldset>
       )}
     </div>
   );

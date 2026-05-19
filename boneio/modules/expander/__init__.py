@@ -41,3 +41,16 @@ def __getattr__(name: str) -> Any:
         from boneio.modules.expander.routes import register_routes
         return register_routes
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _register_self() -> None:
+    """Register this module with the process-wide ModuleRegistry."""
+    try:
+        import boneio.modules.expander as _self
+        from boneio.modules._registry import ModuleRegistry
+        ModuleRegistry.get().register(_self)
+    except Exception:  # noqa: BLE001
+        pass  # Registry not available in minimal test environments
+
+
+_register_self()

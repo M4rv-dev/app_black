@@ -1,0 +1,39 @@
+diff --git a/boneio/core/manager/remote_input_registrar.py b/boneio/core/manager/remote_input_registrar.py
+index 4fba001..8f78f27 100644
+--- a/boneio/core/manager/remote_input_registrar.py
++++ b/boneio/core/manager/remote_input_registrar.py
+@@ -159,6 +159,15 @@ class RemoteInputRegistrar:
+             else {}
+         )
+ 
++        # Module-provided protocols (e.g. remote_mqtt) own their own factory +
++        # HA discovery + subscribe. If a module claims this row, return early.
++        from boneio.modules.remote_mqtt.manager_integration import try_setup_mqtt_input
++        handled = try_setup_mqtt_input(
++            self._manager, custom_id, ri_cfg, inputs_dict, parsed_actions, self._ha_discovery_fn,
++        )
++        if handled is not None:
++            return handled
++
+         esphome_input = ESPHomeBinarySensorInput(
+             id=custom_id,
+             name=name,
+@@ -223,10 +232,18 @@ class RemoteInputRegistrar:
+ 
+         Used during remote device reload to clean up before re-registering.
+         Removes any input that is a :class:`RemoteInputBase` subclass.
++        MQTT generic inputs additionally need an async unsubscribe — that's
++        scheduled by the extension module before the dict entries are deleted.
+ 
+         Args:
+             inputs_dict: Shared ``InputManager._inputs`` dictionary.
+         """
++        # Module-owned cleanup (subscriptions, timers, etc.) — invoked before
++        # the registrar drops its rows, so modules can flush state attached to
++        # entries they originally registered.
++        from boneio.modules.remote_mqtt.manager_integration import cleanup_mqtt_for_registrar
++        cleanup_mqtt_for_registrar(inputs_dict)
++
+         to_remove = [
+             k for k, v in inputs_dict.items() if isinstance(v, RemoteInputBase)
+         ]

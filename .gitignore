@@ -136,6 +136,7 @@ frontend/dev-dist/
 
 .vscode
 .windsurf
+.claude
 
 # Local deployment script with password — never commit
 deploy_backend.sh

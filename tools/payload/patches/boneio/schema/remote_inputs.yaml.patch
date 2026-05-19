@@ -1,0 +1,17 @@
+diff --git a/boneio/schema/remote_inputs.yaml b/boneio/schema/remote_inputs.yaml
+index 256c329..e98e5a4 100644
+--- a/boneio/schema/remote_inputs.yaml
++++ b/boneio/schema/remote_inputs.yaml
+@@ -51,7 +51,11 @@ schema:
+       meta:
+         label: Input/Sensor ID
+         description: |
+-          Binary sensor object_id on the remote device (e.g. "IN_02").
++          Entity object_id on the remote device. For ESPHome devices this
++          is the binary sensor's object_id (e.g. "IN_02"). For generic
++          MQTT devices this references one of the entries in
++          remote_devices[*].mqtt.inputs (which carry the topic + Jinja2
++          value_template + payload_on/off mapping).
+     mode:
+       type: string
+       required: False

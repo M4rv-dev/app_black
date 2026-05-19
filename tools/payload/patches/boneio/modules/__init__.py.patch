@@ -1,0 +1,12 @@
+diff --git a/boneio/modules/__init__.py b/boneio/modules/__init__.py
+new file mode 100644
+index 0000000..0ba0878
+--- /dev/null
++++ b/boneio/modules/__init__.py
+@@ -0,0 +1,6 @@
++"""BoneIO extension modules.
++
++Each subpackage is a self-contained feature that lives alongside core boneIO
++without modifying its internals. Modules expose a stable public API via their
++``__init__.py``; core boneIO files import only from there.
++"""

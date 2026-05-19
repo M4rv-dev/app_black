@@ -31,8 +31,13 @@ from __future__ import annotations
 
 import getpass
 import io
+import json
 import os
+import posixpath
+import shutil
 import sys
+import tempfile
+import textwrap
 import time
 import tomllib
 from dataclasses import dataclass
@@ -93,7 +98,7 @@ def _load_config() -> HostConfig:
 
 
 def _get_password(cfg: HostConfig) -> str:
-    """Resolve device password from env → keyring, no other sources."""
+    """Resolve device password from env → keyring. Used only for sudo commands."""
     env_pw = os.environ.get("BONEIO_DEPLOY_PASSWORD")
     if env_pw:
         return env_pw
@@ -119,38 +124,31 @@ def _need_tool(cmd: str, install_hint: str) -> None:
 
 
 # ----------------------------------------------------------------------
-# SSH helpers — thin wrappers over sshpass + rsync.
-# We don't use Fabric here because we already have sshpass in the toolchain
-# (Mac brew) and Fabric's interactive sudo handling on BBB is finicky.
+# SSH helpers — thin wrappers over ssh/scp/rsync (key auth).
+# Plain ssh + key auth; sudo calls still pipe the keyring password via -S.
 # Keep it transparent: every helper just builds the argv and exec's it.
 # ----------------------------------------------------------------------
 
-def _ssh(cfg: HostConfig, password: str, remote_cmd: str, *, ctx, hide: bool = False) -> object:
-    """Run ``remote_cmd`` on the device via ssh. Returns Invoke's Result."""
-    argv = [
-        "sshpass", "-p", password,
-        "ssh", *cfg.ssh_opts,
-        cfg.user_host, remote_cmd,
-    ]
+def _ssh(cfg: HostConfig, password: str | None, remote_cmd: str, *, ctx, hide: bool = False) -> object:
+    """Run ``remote_cmd`` on the device via ssh (key auth). Returns Invoke's Result."""
+    argv = ["ssh", *cfg.ssh_opts, cfg.user_host, remote_cmd]
     return ctx.run(" ".join(_shell_quote(a) for a in argv), hide=hide, pty=False, warn=True)
 
 
 def _ssh_sudo(cfg: HostConfig, password: str, remote_cmd: str, *, ctx, hide: bool = False) -> object:
     """Run ``remote_cmd`` with sudo on the device (password piped via -S)."""
-    # We pipe the password to sudo -S, NOT via shell echo of literal text —
-    # that keeps it out of the device's process list as much as possible.
     wrapped = f"echo {_shell_quote(password)} | sudo -S bash -c {_shell_quote(remote_cmd)}"
-    return _ssh(cfg, password, wrapped, ctx=ctx, hide=hide)
+    return _ssh(cfg, None, wrapped, ctx=ctx, hide=hide)
 
 
-def _rsync(cfg: HostConfig, password: str, src: str, dst_rel: str, *, ctx) -> None:
-    """rsync local src → host:staging/dst_rel, with sane defaults."""
+def _rsync(cfg: HostConfig, password: str | None, src: str, dst_rel: str, *, ctx) -> None:
+    """rsync local src → host:staging/dst_rel, with sane defaults (key auth)."""
+    ssh_cmd = f"ssh {' '.join(cfg.ssh_opts)}"
     argv = [
-        "sshpass", "-p", password,
         "rsync", "-az",
         "--exclude=__pycache__/", "--exclude=*.pyc", "--exclude=*.pyo",
         "--exclude=.DS_Store",
-        "-e", f"ssh {' '.join(cfg.ssh_opts)}",
+        "-e", ssh_cmd,
         src,
         f"{cfg.user_host}:{cfg.staging}/{dst_rel}",
     ]
@@ -258,7 +256,6 @@ def deploy(c, fast=False, no_health=False, no_snapshot=False):
     """
     cfg = _load_config()
     pw = _get_password(cfg)
-    _need_tool("sshpass", "brew install hudochenkov/sshpass/sshpass")
     _need_tool("rsync", "install via your package manager")
 
     src = REPO_ROOT / "boneio"
@@ -372,7 +369,6 @@ def backup(c, out=""):
     ]
     for p in paths:
         argv = [
-            "sshpass", "-p", pw,
             "rsync", "-az", "--ignore-missing-args",
             "-e", f"ssh {' '.join(cfg.ssh_opts)}",
             f"{cfg.user_host}:{p}", str(dst) + "/",
@@ -425,6 +421,46 @@ def smoke(c):
         for line in fatal.splitlines():
             print(f"    {line}")
     ok &= not has_fatal
+
+    # 4. /api/version returns valid JSON.
+    res = c.run(
+        f"curl -sS --max-time 5 http://{cfg.host}:{cfg.port}/api/version",
+        hide=True, warn=True, pty=False,
+    )
+    try:
+        ver_data = json.loads(res.stdout or "{}")
+        ver_ok = isinstance(ver_data, dict) and "version" in ver_data
+        ver_str = ver_data.get("version", "?") if isinstance(ver_data, dict) else "?"
+        print(f"[{'✓' if ver_ok else '✗'}] /api/version: {ver_str if ver_ok else (res.stdout or '').strip()[:80]!r}")
+        ok &= ver_ok
+    except ValueError:
+        print(f"[✗] /api/version: invalid JSON ({(res.stdout or '').strip()[:80]!r})")
+        ok = False
+
+    # 5. WebSocket handshake — connect, wait for first message, disconnect.
+    ws_url = f"ws://{cfg.host}:{cfg.port}/ws/state"
+    ws_script = textwrap.dedent(f"""
+        import asyncio, sys
+        async def _check():
+            try:
+                import websockets.asyncio.client as _w
+                async with _w.connect({ws_url!r}, open_timeout=5) as ws:
+                    await asyncio.wait_for(ws.recv(), timeout=5)
+                    print("ok")
+            except Exception as e:
+                print("err", e)
+                sys.exit(1)
+        asyncio.run(_check())
+    """)
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tmp:
+        tmp.write(ws_script)
+        tmp_path = tmp.name
+    res = c.run(f"python3 {tmp_path}", hide=True, warn=True, pty=False)
+    Path(tmp_path).unlink(missing_ok=True)
+    ws_ok = "ok" in (res.stdout or "")
+    ws_detail = (res.stdout or res.stderr or "").strip()[:80]
+    print(f"[{'✓' if ws_ok else '✗'}] WebSocket handshake {ws_url}: {ws_detail or 'no output'}")
+    ok &= ws_ok
 
     if not ok:
         sys.exit("\n!! Smoke test FAILED — investigate before considering deploy successful.")
@@ -519,6 +555,74 @@ def status(c):
         print(f"  {line}")
 
 
+@task(help={
+    "no-install": "Skip copying built assets into boneio/webui/frontend-dist/ (build only).",
+})
+def build_frontend(c, no_install=False):
+    """Build the Vite frontend and install it into boneio/webui/frontend-dist/.
+
+    Requires pnpm (or npm) installed locally. Run before ``inv deploy`` when
+    frontend files changed. The built assets are committed to the repo so the
+    backend can serve them without a build step on the device.
+    """
+    frontend_dir = REPO_ROOT / "frontend"
+    if not frontend_dir.is_dir():
+        sys.exit(f"!! {frontend_dir} does not exist.")
+
+    _need_tool("pnpm", "npm install -g pnpm  (or use npm/yarn)")
+
+    print("→ installing frontend dependencies …")
+    c.run("pnpm install --frozen-lockfile", cwd=str(frontend_dir), pty=False)
+
+    print("→ building frontend (tsc + vite) …")
+    c.run("pnpm run build", cwd=str(frontend_dir), pty=False)
+
+    if no_install:
+        print("✓ frontend built (assets in frontend/dist/).")
+        return
+
+    dist_src = frontend_dir / "dist"
+    dist_dst = REPO_ROOT / "boneio" / "webui" / "frontend-dist"
+
+    if not dist_src.is_dir():
+        sys.exit(f"!! Build output not found at {dist_src} — did the build succeed?")
+
+    print(f"→ installing built assets into {dist_dst.relative_to(REPO_ROOT)}/ …")
+    if dist_dst.exists():
+        shutil.rmtree(dist_dst)
+    shutil.copytree(dist_src, dist_dst)
+    print(f"✓ frontend installed into {dist_dst.relative_to(REPO_ROOT)}/")
+
+
+@task(help={
+    "fast": "Skip service restart on backend deploy.",
+    "no-health": "Skip post-deploy health check.",
+    "no-snapshot": "Skip pre-deploy snapshot (no rollback path).",
+    "frontend-only": "Only build + install frontend, skip backend rsync.",
+    "backend-only": "Only rsync backend, skip frontend build.",
+})
+def deploy_full(c, fast=False, no_health=False, no_snapshot=False,
+                frontend_only=False, backend_only=False):
+    """Build frontend + deploy backend in one command.
+
+    Full flow:
+      1. pnpm build → copy to boneio/webui/frontend-dist/
+      2. snapshot current install (rollback source)
+      3. rsync boneio/ to device
+      4. restart service + healthcheck
+
+    Use ``--frontend-only`` when only UI files changed (skips rsync + restart).
+    Use ``--backend-only`` to skip frontend build (same as ``inv deploy``).
+    """
+    if not backend_only:
+        build_frontend(c)
+
+    if not frontend_only:
+        deploy(c, fast=fast, no_health=no_health, no_snapshot=no_snapshot)
+    else:
+        print("✓ Frontend built and installed. Backend not deployed (--frontend-only).")
+
+
 @task
 def regen_schemas(c, sync_back=False):
     """Re-run schema_converter on the device + optionally rsync results back.
@@ -546,10 +650,68 @@ def regen_schemas(c, sync_back=False):
     src = f"{cfg.user_host}:{cfg.site_packages}/webui/schema/"
     dst = REPO_ROOT / "boneio" / "webui" / "schema"
     argv = [
-        "sshpass", "-p", pw,
         "rsync", "-az",
         "-e", f"ssh {' '.join(cfg.ssh_opts)}",
         src, str(dst) + "/",
     ]
     c.run(" ".join(_shell_quote(a) for a in argv), pty=False)
     print(f"✓ synced regenerated schemas into {dst.relative_to(REPO_ROOT)}/")
+
+
+@task(help={
+    "path": "Test path / pattern to run (default: tests/unit/core/).",
+    "markers": "Pytest -m expression (default: 'not hardware').",
+    "verbose": "Pass -v to pytest for detailed output.",
+})
+def test(c, path="tests/unit/core/", markers="not hardware", verbose=False):
+    """Sync tests to the device and run pytest inside the device venv.
+
+    Copies ``tests/`` and ``pyproject.toml`` to the device, installs
+    pytest into the existing venv (one-time), then runs the suite.
+    Results are streamed back via SSH.
+    """
+    cfg = _load_config()
+    pw = _get_password(cfg)
+    # site_packages = .../venv/lib/python3.xx/site-packages/boneio
+    # device_base   = grandparent of venv/ = 5 levels up
+    venv_dir = posixpath.dirname(  # site-packages
+        posixpath.dirname(          # python3.xx
+        posixpath.dirname(          # lib
+        posixpath.dirname(          # venv
+        posixpath.dirname(cfg.site_packages)))))
+    device_base = venv_dir
+    venv_python = posixpath.join(venv_dir, "venv", "bin", "python")
+
+    # Use a dedicated staging dir on device — keeps it separate from the live install.
+    test_dir = "/tmp/boneio_tests"
+    _ssh(cfg, pw, f"mkdir -p {test_dir}", ctx=c, hide=True)
+
+    # Sync boneio source + tests + pyproject via scp.
+    print("→ syncing boneio source + tests/ to device …")
+    for local, remote in [
+        (str(REPO_ROOT / "boneio"), f"{cfg.user_host}:{test_dir}/"),
+        (str(REPO_ROOT / "tests"), f"{cfg.user_host}:{test_dir}/"),
+        (str(REPO_ROOT / "pyproject.toml"), f"{cfg.user_host}:{test_dir}/pyproject.toml"),
+    ]:
+        argv = ["scp", "-r"] + cfg.ssh_opts + [local, remote]
+        c.run(" ".join(_shell_quote(a) for a in argv), pty=False, warn=True)
+
+    # Ensure pytest is installed in device venv.
+    print("→ ensuring pytest is installed in device venv …")
+    res = _ssh(cfg, pw,
+        f"{venv_python} -m pip install --quiet pytest pytest-asyncio",
+        ctx=c, hide=True,
+    )
+    if res.exited != 0:
+        sys.exit(f"!! pip install pytest failed:\n{res.stderr or res.stdout}")
+
+    # Run pytest from test_dir with venv activated.
+    verbosity = "-v" if verbose else "-q"
+    pytest_cmd = (
+        f"cd {test_dir} && "
+        f". {venv_dir}/venv/bin/activate && "
+        f"pytest {path} -m {_shell_quote(markers)} {verbosity} --tb=short --no-header"
+    )
+
+    print(f"→ running: pytest {path} -m '{markers}' on {cfg.host} …\n")
+    _ssh(cfg, pw, pytest_cmd, ctx=c, hide=False)

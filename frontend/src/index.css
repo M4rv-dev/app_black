@@ -200,6 +200,26 @@ body {
   width: 100% !important;
 }
 
+/* Glossy navbar — iOS-style frosted glass on all sticky nav bars.
+   backdrop-blur-md alone is set via Tailwind; here we boost saturation so
+   colours bleed through nicely and add a thin highlight on the bottom edge. */
+.navbar,
+[class*="sticky"][class*="z-20"],
+[class*="sticky"][class*="z-30"] {
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(180%);
+  box-shadow: 0 0px 8px 0px rgb(0 0 0 / 0.18);
+}
+
+.dark .navbar,
+.dark [class*="sticky"][class*="z-20"],
+.dark [class*="sticky"][class*="z-30"],
+[data-theme="dark"] .navbar,
+[data-theme="dark"] [class*="sticky"][class*="z-20"],
+[data-theme="dark"] [class*="sticky"][class*="z-30"] {
+  box-shadow: 0 0px 8px 0px rgb(0 0 0 / 0.60);
+}
+
 /* Inputs and selects always use base-100 background so they stay readable
    on any parent background (cards, modals, darker sections) */
 .input,
@@ -229,9 +249,26 @@ textarea.textarea {
 textarea.textarea::placeholder,
 input::placeholder,
 textarea::placeholder {
-  color: color-mix(in oklab, var(--color-base-content) 50%, transparent);
+  color: color-mix(in oklab, var(--color-base-content) 40%, transparent);
   font-style: italic;
   opacity: 1; /* normalise across browsers */
+}
+
+/* Native <select> placeholder state — when the selected option has an empty
+   value or the special sentinel values used across the app (_none_, _header_*).
+   CSS can only target the select element itself via :has(), not the option. */
+select.select:has(option[value=""]:checked),
+select.select:has(option[value="_none_"]:checked) {
+  color: color-mix(in oklab, var(--color-base-content) 40%, transparent);
+  font-style: italic;
+}
+
+/* shadcn Select — when showing placeholder text the trigger gets
+   data-placeholder attribute from Radix UI */
+[data-slot="select-trigger"][data-placeholder],
+[data-placeholder] > [data-slot="select-value"] {
+  color: color-mix(in oklab, var(--color-base-content) 40%, transparent);
+  font-style: italic;
 }
 
 .modbus-sparkline,

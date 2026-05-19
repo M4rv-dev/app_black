@@ -210,3 +210,40 @@ def teardown_on_devices_reload(manager: "Manager") -> None:
 def setup_on_devices_reload(manager: "Manager") -> None:
     """Re-register MQTT-owned state after remote_devices is reloaded."""
     register_remote_sensors(manager)
+
+
+def register_routes(app: object) -> None:
+    """Mount FastAPI routers for the remote_mqtt module."""
+    from boneio.modules.remote_mqtt.routes import register_routes as _register
+    _register(app)
+
+
+def try_setup_output(manager: "Manager", out_cfg: dict, entity_id: str) -> bool:
+    """Claim a remote output row if it belongs to this module."""
+    return try_setup_mqtt_output(manager, out_cfg, entity_id)
+
+
+def make_reload_handler(manager: "Manager", section: str):
+    """Return an async reload coroutine for ``section``, or None."""
+    if section == "remote_sensors":
+        async def _handler():
+            await reload_remote_sensors(manager)
+        return _handler
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Self-registration — runs once when this module is first imported.
+# ---------------------------------------------------------------------------
+
+def _register_self() -> None:
+    """Register this integration with the process-wide ModuleRegistry."""
+    try:
+        from boneio.modules._registry import ModuleRegistry
+        import boneio.modules.remote_mqtt.manager_integration as _self
+        ModuleRegistry.get().register(_self)
+    except Exception:  # noqa: BLE001
+        pass  # Registry not available in minimal test environments
+
+
+_register_self()

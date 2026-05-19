@@ -180,7 +180,18 @@ const INITIAL_RECONNECT_DELAY = 1000; // Start with 1 second
 const MAX_RECONNECT_DELAY = 30000; // Max 30 seconds
 const PING_INTERVAL = 15000; // 15 seconds - shorter for mobile browsers
 let activeConnections = 0;
-let globalIsConnected = false;
+export let globalIsConnected = false;
+
+/**
+ * Subscribe directly to global WebSocket connection state without using the useWebSocket hook.
+ * Use this for components that need to display WS status but should not affect the lifecycle.
+ */
+export const addGlobalConnectionStateListener = (callback: (connected: boolean) => void) => {
+  globalConnectionStateListeners.add(callback);
+  return () => {
+    globalConnectionStateListeners.delete(callback);
+  };
+};
 
 /**
  * Subscribe directly to global WebSocket messages without using the useWebSocket hook.

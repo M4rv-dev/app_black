@@ -84,6 +84,11 @@ def evaluate(template_str: str, payload: str) -> str:
         return template.render(value=payload, value_json=parsed)
     except TemplateError as exc:
         raise ValueError(f"Template error: {exc}") from exc
+    except Exception as exc:
+        # Jinja2's rewrite_traceback_stack (used by pytest and Jinja2 itself)
+        # can re-raise exceptions that bypass the TemplateError catch above.
+        # We wrap them all into ValueError so callers always get a clean type.
+        raise ValueError(f"Template error: {exc}") from exc
 
 
 def coerce_bool(

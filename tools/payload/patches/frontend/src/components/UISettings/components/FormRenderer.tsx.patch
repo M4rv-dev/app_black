@@ -1,0 +1,62 @@
+diff --git a/frontend/src/components/UISettings/components/FormRenderer.tsx b/frontend/src/components/UISettings/components/FormRenderer.tsx
+index 58bcf56..b64141d 100644
+--- a/frontend/src/components/UISettings/components/FormRenderer.tsx
++++ b/frontend/src/components/UISettings/components/FormRenderer.tsx
+@@ -19,6 +19,7 @@ import ADCForm from '../ADCForm';
+ import BoardSensorsForm from '../BoardSensorsForm';
+ import RemoteInputForm from '../RemoteInputForm';
+ import RemoteOutputForm from '../RemoteOutputForm';
++import RemoteSensorForm from '../modules/remote_mqtt/forms/RemoteSensorForm';
+ import InputTypeSwitcher from './InputTypeSwitcher';
+ 
+ interface FormRendererProps {
+@@ -47,6 +48,8 @@ interface FormRendererProps {
+   value: any[];
+   interlockGroups: string[];
+   availableDallasSensors: { address: string; type: string }[];
++  outputKind?: 'board' | 'expander';
++  mcp23017?: Array<{ id?: string }>;
+   // Callbacks
+   onChange: (item: any) => void;
+   onSave: (e?: any) => void;
+@@ -165,6 +168,24 @@ const FormRenderer: React.FC<FormRendererProps> = (props) => {
+     );
+   }
+ 
++  // Remote sensors — MQTT generic sensors form
++  if (sectionType === 'remote_sensors') {
++    return (
++      <RemoteSensorForm
++        data={editingItem}
++        onChange={props.onChange}
++        isNew={props.editingIndex === null}
++        schema={props.schema}
++        allAreas={props.allAreas}
++        allRemoteDevices={props.allRemoteDevices}
++        existingItems={value}
++        editingIndex={editingIndex}
++        onValidationChange={props.onValidationChange}
++        attemptedSubmit={props.attemptedSubmit}
++      />
++    );
++  }
++
+   switch (sectionType) {
+     case 'binary_sensor':
+       return <BinarySensorForm {...inputFormProps(props)} />;
+@@ -180,6 +201,7 @@ const FormRenderer: React.FC<FormRendererProps> = (props) => {
+           onSave={props.onSave}
+           onCancel={props.onCancel}
+           isNew={editingIndex === null}
++          outputKind={props.outputKind}
+           schema={schema}
+           uiSchema={uiSchema}
+           deviceType={deviceType}
+@@ -189,6 +211,7 @@ const FormRenderer: React.FC<FormRendererProps> = (props) => {
+           interlockGroups={props.interlockGroups}
+           onInterlockGroupCreated={props.onInterlockGroupCreated}
+           allCovers={props.allCovers}
++          mcp23017={props.mcp23017}
+         />
+       );
+ 

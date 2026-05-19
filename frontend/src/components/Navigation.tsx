@@ -10,7 +10,22 @@ import { useDeviceName } from '../hooks/useDeviceName';
 import { useConfig } from '../contexts/ConfigContext';
 import { useNodeRedAvailability } from '../hooks/useNodeRedAvailability';
 import { useTranslation } from '../hooks/useTranslation';
+import { useWsStatus } from '../hooks/useWsStatus';
 import Logo from "./Logo"
+
+function WsStatusBadge() {
+  const { isConnected } = useWsStatus();
+  return (
+    <div
+      className={clsx(
+        'w-2 h-2 rounded-full shrink-0 transition-colors duration-500',
+        isConnected ? 'bg-success' : 'bg-error animate-pulse'
+      )}
+      title={isConnected ? 'WebSocket: connected' : 'WebSocket: disconnected'}
+      aria-label={isConnected ? 'Connected' : 'Disconnected'}
+    />
+  );
+}
 
 export default function Navigation() {
   const { isAuthenticated, logout } = useAuth();
@@ -56,7 +71,7 @@ export default function Navigation() {
 
   return (
     <>
-    <div className="navbar bg-base-200 border-b border-base-content/10 px-4 sticky top-0 z-30">
+    <div className="navbar bg-base-200/75 backdrop-blur-md border-b border-base-content/10 px-4 sticky top-0 z-30 supports-[backdrop-filter]:bg-base-200/60">
       <div className="flex-none xl:hidden">
         <label htmlFor="my-drawer" className="btn btn-square btn-ghost">
           <svg
@@ -101,7 +116,8 @@ export default function Navigation() {
           )}
         </div>
       </div>
-      <div className="flex xl:gap-2">
+      <div className="flex xl:gap-2 items-center">
+        <WsStatusBadge />
         <ThemeChanger />
         <LanguageSelector />
         {isAuthenticated && (
@@ -116,11 +132,11 @@ export default function Navigation() {
       </div>
     </div>
     {/* Desktop second row: navigation menu */}
-    <div className="hidden xl:block bg-base-200/80 border-b border-base-content/10 sticky top-16 z-20">
+    <div className="hidden xl:block bg-base-200/70 backdrop-blur-md border-b border-base-content/10 sticky top-16 z-20 supports-[backdrop-filter]:bg-base-200/55">
       <Menu />
     </div>
     {/* Mobile sub-header with device info */}
-    <div className="xl:hidden bg-base-200/80 border-b border-base-content/5 px-4 py-1 flex items-center justify-between text-xs sticky top-16 z-20">
+    <div className="xl:hidden bg-base-200/70 backdrop-blur-md border-b border-base-content/5 px-4 py-1 flex items-center justify-between text-xs sticky top-16 z-20 supports-[backdrop-filter]:bg-base-200/55">
       <div className="flex items-center gap-3 min-w-0">
         {deviceName && (
           <span className="truncate"><span className="opacity-50">boneIO:</span> {deviceName}</span>
@@ -211,9 +227,43 @@ function Menu({ sideMenu = false }: { sideMenu?: boolean }) {
         <ul className="menu menu-horizontal flex flex-wrap gap-0">
           {leftItems.map(renderItem)}
         </ul>
-        <ul className="menu menu-horizontal flex flex-wrap gap-0">
-          {rightItems.map(renderItem)}
-        </ul>
+        <div className="dropdown dropdown-end">
+          <button
+            tabIndex={0}
+            type="button"
+            className={clsx(
+              'btn btn-ghost btn-sm gap-1.5 px-2',
+              rightItems.some(isActive) && 'bg-primary/10 text-primary'
+            )}
+            aria-label="Menu systemowe"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="w-5 h-5 stroke-current">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <ul
+            tabIndex={0}
+            className="dropdown-content menu bg-base-100 rounded-box shadow-lg border border-base-200 z-50 w-52 p-1 mt-1"
+          >
+            {rightItems.map((item) => (
+              <li key={item.path}>
+                <a
+                  onClick={() => handleClick(item.path)}
+                  className={clsx(
+                    'flex items-center gap-2 px-3 py-2 text-sm rounded-lg',
+                    isActive(item) && 'bg-primary text-primary-content font-semibold'
+                  )}
+                >
+                  <item.icon className="h-4 w-4 shrink-0" />
+                  <span>{item.label}</span>
+                  {item.experimental && (
+                    <span className="ml-auto badge badge-warning badge-xs">{t('navigation.experimental')}</span>
+                  )}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
     );
   }

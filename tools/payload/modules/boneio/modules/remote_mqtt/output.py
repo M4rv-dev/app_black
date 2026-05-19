@@ -1,0 +1,325 @@
+"""MQTTGenericOutput — remote output publishing commands to an arbitrary MQTT topic.
+
+Subclasses :class:`RemoteOutputBase` to remain duck-type compatible with
+``OutputManager`` (irrigation, output groups, frontend, etc.). Overrides
+the control methods to publish directly via the MQTT bus instead of
+delegating to a remote device manager.
+
+State feedback is optional: when ``state_topic`` is configured, the output
+subscribes and evaluates ``state_value_template`` on each incoming payload
+to keep its local state in sync with the real device.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import TYPE_CHECKING, Any
+
+from boneio.components.output.remote import RemoteOutputBase
+from boneio.const import OFF, ON
+from boneio.modules.remote_mqtt.dispatcher import get_dispatcher
+from boneio.modules.remote_mqtt.template import coerce_bool, evaluate
+
+if TYPE_CHECKING:
+    from boneio.core.manager import Manager
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class MQTTGenericOutput(RemoteOutputBase):
+    """Remote output controlled via raw MQTT publish + optional state feedback."""
+
+    def __init__(
+        self,
+        *,
+        topic: str,
+        message_bus: Any,
+        command_template: str = "{{ state }}",
+        state_topic: str | None = None,
+        state_value_template: str = "{{ value }}",
+        state_payload_on: str | None = None,
+        state_payload_off: str | None = None,
+        qos: int = 0,
+        retain: bool = False,
+        **base_kwargs: Any,
+    ) -> None:
+        super().__init__(**base_kwargs)
+        self._topic = topic
+        self._message_bus = message_bus
+        self._command_template = command_template
+        self._state_topic = state_topic
+        self._state_value_template = state_value_template
+        self._state_payload_on = state_payload_on
+        self._state_payload_off = state_payload_off
+        self._qos = qos
+        self._retain = retain
+        self._state_subscribed = False
+        # No remote device manager — we go straight to the bus. Signal
+        # that resolution is "done" so async_turn_on/off skips the check.
+        self._available = True
+        if state_topic:
+            # Schedule subscription on the running event loop (manager calls
+            # this from within asyncio context during register_remote_outputs).
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._subscribe_state(), name=f"mqtt-output-{self._id}-state")
+            except RuntimeError:
+                _LOGGER.warning(
+                    "MQTTGenericOutput '%s' instantiated outside event loop — "
+                    "state feedback subscription deferred",
+                    self._id,
+                )
+
+    # ------------------------------------------------------------------
+    # Control overrides — publish to the bus, skip device manager flow
+    # ------------------------------------------------------------------
+
+    def _resolve_device_manager(self) -> bool:
+        """We don't use device managers — always 'resolved'."""
+        return True
+
+    async def async_turn_on(self, timestamp: float | None = None) -> None:
+        _LOGGER.info("MQTTGenericOutput '%s' async_turn_on CALLED", self._id)
+        await self._publish_state(ON, timestamp)
+
+    async def async_turn_off(self, timestamp: float | None = None) -> None:
+        _LOGGER.info("MQTTGenericOutput '%s' async_turn_off CALLED", self._id)
+        await self._publish_state(OFF, timestamp)
+
+    async def async_set_brightness(self, brightness: int, timestamp: float | None = None) -> None:
+        # Brightness for generic MQTT outputs would need a separate channel
+        # (e.g. JSON payload). For MVP we treat brightness=0 as OFF and
+        # anything else as ON; users wanting real dimming can wire it up
+        # via command_template (e.g. `{"state":"{{ state }}","brightness":{{ brightness }}}`).
+        await self._publish_state(
+            ON if brightness > 0 else OFF,
+            timestamp,
+            brightness=brightness,
+        )
+
+    async def _publish_state(
+        self,
+        state: str,
+        timestamp: float | None = None,
+        brightness: int | None = None,
+    ) -> None:
+        """Render command_template with full output-side context and publish.
+
+        Output templates get a richer context than input value_templates:
+        ``state`` (\"ON\"/\"OFF\"), ``brightness`` (0-255), plus the legacy
+        ``value`` alias (= state) so users can mix patterns. ``value_json``
+        is exposed as ``None`` for symmetry.
+
+        FIX 2026-05-18: previously called ``evaluate(template, state)``
+        first which would raise StrictUndefined for any template using
+        ``{{ state }}`` or ``{{ brightness }}`` (the eval context only
+        had ``value``/``value_json``) — the fallback re-render code was
+        unreachable because we'd already returned. Now we always render
+        directly with the full context.
+        """
+        from boneio.modules.remote_mqtt.template import _get_env
+        from jinja2.exceptions import TemplateError
+
+        eff_brightness = brightness if brightness is not None else (255 if state == ON else 0)
+        try:
+            tpl = _get_env().from_string(self._command_template)
+            payload = tpl.render(
+                state=state,
+                value=state,
+                value_json=None,
+                brightness=eff_brightness,
+            )
+        except TemplateError as exc:
+            _LOGGER.warning(
+                "MQTTGenericOutput '%s' command_template %r raised: %s — skipping publish",
+                self._id, self._command_template, exc,
+            )
+            return
+
+        try:
+            self._message_bus.send_message(
+                topic=self._topic,
+                payload=payload,
+                retain=self._retain,
+                qos=self._qos,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "MQTTGenericOutput '%s' failed to publish to '%s': %s",
+                self._id, self._topic, exc,
+            )
+            return
+
+        # Optimistic local update — if state_topic is configured, the real
+        # state will arrive via _on_state_message and override this if needed.
+        self._state = state
+        self._last_timestamp = timestamp or time.time()
+        if brightness is not None:
+            self._brightness = brightness
+        self._emit_state_event()
+        _LOGGER.info(
+            "MQTTGenericOutput '%s' published to '%s' (qos=%d retain=%s): %r",
+            self._id, self._topic, self._qos, self._retain, payload,
+        )
+
+    # ------------------------------------------------------------------
+    # State feedback (optional)
+    # ------------------------------------------------------------------
+
+    async def _subscribe_state(self) -> None:
+        if not self._state_topic:
+            return
+        try:
+            dispatcher = get_dispatcher(self._message_bus)
+            await dispatcher.subscribe(
+                self._state_topic, self._on_state_message, f"output:{self._id}"
+            )
+            self._state_subscribed = True
+            _LOGGER.info(
+                "MQTTGenericOutput '%s' subscribed to state_topic '%s'",
+                self._id, self._state_topic,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error(
+                "MQTTGenericOutput '%s' failed to subscribe to state_topic '%s': %s",
+                self._id, self._state_topic, exc,
+            )
+
+    async def _on_state_message(self, topic: str, payload: str) -> None:
+        try:
+            rendered = evaluate(self._state_value_template, payload)
+        except ValueError as exc:
+            _LOGGER.warning(
+                "MQTTGenericOutput '%s' state_value_template error on %r: %s",
+                self._id, payload, exc,
+            )
+            return
+        bool_value = coerce_bool(rendered, self._state_payload_on, self._state_payload_off)
+        if bool_value is None:
+            _LOGGER.debug(
+                "MQTTGenericOutput '%s' state payload %r → %r doesn't coerce to bool",
+                self._id, payload, rendered,
+            )
+            return
+        # Reuses base class state-change handler (emits event + dedupes)
+        self.on_remote_state_change(bool_value)
+
+    async def unsubscribe(self) -> None:
+        if not self._state_subscribed or not self._state_topic:
+            return
+        try:
+            dispatcher = get_dispatcher(self._message_bus)
+            await dispatcher.unsubscribe(self._state_topic, f"output:{self._id}")
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "MQTTGenericOutput '%s' failed to unsubscribe from state_topic '%s': %s",
+                self._id, self._state_topic, exc,
+            )
+        self._state_subscribed = False
+
+
+def _find_device_output(manager: "Manager", device_id: str, output_id: str) -> dict | None:
+    """Look up the output definition on the remote device (mqtt.outputs)."""
+    full_cfg = manager._config_helper.get_config()
+    devices_cfg = full_cfg.get("remote_devices", [])
+    device_cfg = next((d for d in devices_cfg if d.get("id") == device_id), None)
+    if not device_cfg:
+        return None
+    outputs = device_cfg.get("mqtt", {}).get("outputs", [])
+    return next((o for o in outputs if o.get("id") == output_id), None)
+
+
+def setup_remote_output(
+    *,
+    entity_id: str,
+    cfg: dict[str, Any],
+    manager: "Manager",
+    outputs_dict: dict[str, Any],
+) -> bool:
+    """Build and register a single MQTT remote output.
+
+    Resolves the output definition (command_topic + command_template +
+    optional state_topic + state_value_template + qos + retain) by looking
+    up ``cfg.output_id`` on ``cfg.device_id`` in the ``remote_devices``
+    config — same pattern as inputs and as ESPHome switches/lights.
+    """
+    device_id = cfg.get("device_id")
+    output_id = cfg.get("output_id")
+    if not device_id or not output_id:
+        _LOGGER.warning(
+            "Skipping mqtt remote output '%s': missing device_id or output_id",
+            entity_id,
+        )
+        return False
+
+    output_def = _find_device_output(manager, device_id, output_id)
+    if not output_def:
+        _LOGGER.warning(
+            "MQTT remote output '%s': output '%s' not found on device '%s' "
+            "(remote_devices[%s].mqtt.outputs). Add it on the device first.",
+            entity_id, output_id, device_id, device_id,
+        )
+        return False
+
+    topic = output_def.get("topic")
+    if not topic:
+        _LOGGER.warning(
+            "MQTT remote output '%s': device output '%s/%s' has no `topic` "
+            "configured — edit the device's output definition.",
+            entity_id, device_id, output_id,
+        )
+        return False
+
+    # Display name precedence: remote_output override > device output name > entity_id
+    name = str(cfg.get("name") or output_def.get("name") or entity_id)
+    # output_type: remote_output overrides device default
+    output_type = str(cfg.get("output_type") or output_def.get("output_type") or "switch")
+
+    mqtt_output = MQTTGenericOutput(
+        id=entity_id,
+        name=name,
+        device_id=device_id,
+        output_id=output_id,
+        remote_source="mqtt",
+        event_bus=manager._event_bus,
+        output_type=output_type,
+        show_in_ha=bool(cfg.get("show_in_ha", False)),
+        area=cfg.get("area"),
+        on_disconnect=str(cfg.get("on_disconnect", "ignore")),
+        topic=topic,
+        message_bus=manager.message_bus,
+        command_template=output_def.get("command_template", "{{ state }}"),
+        state_topic=output_def.get("state_topic"),
+        state_value_template=output_def.get("state_value_template", "{{ value }}"),
+        state_payload_on=output_def.get("state_payload_on"),
+        state_payload_off=output_def.get("state_payload_off"),
+        qos=int(output_def.get("qos", 0)),
+        retain=bool(output_def.get("retain", False)),
+    )
+
+    outputs_dict[entity_id] = mqtt_output
+
+    _LOGGER.info(
+        "Registered MQTT remote output '%s' (device=%s/%s, topic=%s, state_topic=%s, type=%s)",
+        entity_id, device_id, output_id, topic, output_def.get("state_topic", "—"), output_type,
+    )
+    return True
+
+
+async def cleanup_remote_outputs(outputs_dict: dict[str, Any]) -> None:
+    """Unsubscribe state_topic listeners for every MQTTGenericOutput.
+
+    Called from ``Manager.unregister_remote_outputs`` so state subscriptions
+    don't leak across reloads.
+    """
+    import asyncio
+    tasks = [
+        v.unsubscribe()
+        for v in outputs_dict.values()
+        if isinstance(v, MQTTGenericOutput)
+    ]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+        _LOGGER.info("Unsubscribed %d MQTT remote output state listener(s)", len(tasks))

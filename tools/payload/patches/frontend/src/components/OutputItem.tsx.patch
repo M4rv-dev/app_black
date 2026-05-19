@@ -1,0 +1,10 @@
+diff --git a/frontend/src/components/OutputItem.tsx b/frontend/src/components/OutputItem.tsx
+index 9fc3927..db57e98 100644
+--- a/frontend/src/components/OutputItem.tsx
++++ b/frontend/src/components/OutputItem.tsx
+@@ -223,3 +223,5 @@ const OutputItem: React.FC<OutputItemProps> = ({
+ };
+ 
+ export default OutputItem;
++
++

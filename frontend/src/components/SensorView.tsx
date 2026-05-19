@@ -1,4 +1,6 @@
-import { useContext, useState, useMemo } from 'react';
+import { useContext, useState, useMemo, useEffect } from 'react';
+import SkeletonGrid from './SkeletonGrid';
+import { useWsStatus } from '../hooks/useWsStatus';
 import { useTranslation } from '@/hooks/useTranslation';
 import { WebSocketContext } from '../App';
 import ViewToggle from './ViewToggle';
@@ -57,6 +59,13 @@ const GROUP_ORDER = ['adc', 'board', 'system', 'other'];
 export default function SensorView() {
   const { t } = useTranslation();
   const { sensors, modbus_devices } = useContext(WebSocketContext);
+  const { isConnected } = useWsStatus();
+  const [seenData, setSeenData] = useState(false);
+
+  useEffect(() => {
+    if (sensors.length > 0) setSeenData(true);
+  }, [sensors]);
+
   const [isGrid, setIsGrid] = useState(() => {
     const saved = localStorage.getItem('sensorViewMode');
     return saved ? saved === 'grid' : true;
@@ -115,7 +124,9 @@ export default function SensorView() {
         <ViewToggle isGrid={isGrid} onToggle={handleViewToggle} />
       </div>
 
-      {validSensors.length === 0 ? (
+      {validSensors.length === 0 && !seenData && !isConnected ? (
+        <SkeletonGrid count={6} />
+      ) : validSensors.length === 0 ? (
         <div className="text-center py-8 text-base-content/60">
           {t('sensors.no_sensors')}
         </div>

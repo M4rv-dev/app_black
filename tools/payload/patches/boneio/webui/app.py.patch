@@ -1,0 +1,17 @@
+diff --git a/boneio/webui/app.py b/boneio/webui/app.py
+index 29615e9..f0a2822 100644
+--- a/boneio/webui/app.py
++++ b/boneio/webui/app.py
+@@ -154,6 +154,12 @@ app.include_router(templates_router)
+ app.include_router(tools_router)
+ app.include_router(migrations_router)
+ 
++# Extension modules (live in boneio/modules/<feature>/)
++from boneio.modules.expander import register_routes as register_expander_routes
++register_expander_routes(app)
++from boneio.modules.remote_mqtt import register_routes as register_remote_mqtt_routes
++register_remote_mqtt_routes(app)
++
+ 
+ # Override get_manager dependency in routers using FastAPI dependency_overrides
+ from boneio.webui.routes import covers as covers_module

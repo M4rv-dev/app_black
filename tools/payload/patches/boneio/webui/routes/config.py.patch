@@ -1,0 +1,53 @@
+diff --git a/boneio/webui/routes/config.py b/boneio/webui/routes/config.py
+index 32a362b..bfca825 100644
+--- a/boneio/webui/routes/config.py
++++ b/boneio/webui/routes/config.py
+@@ -882,36 +882,29 @@ async def get_file_content(file_path: str):
+ 
+ @router.put("/files/{file_path:path}")
+ async def update_file_content(file_path: str, content: dict = Body(...)):
+-    """
+-    Update content of a file.
+-
+-    Args:
+-        file_path: Relative path to file.
+-        content: Dictionary with 'content' key containing file content.
+-
+-    Returns:
+-        Status response.
+-    """
++    """Update or create a YAML/JSON file relative to the config directory."""
+     config_dir = Path(_get_app_state().yaml_config_file).parent
+-    full_path = os.path.join(config_dir, file_path)
++    full_path = config_dir / file_path
+ 
+-    if not os.path.exists(full_path):
+-        raise HTTPException(status_code=404, detail="File not found")
++    if not str(full_path).endswith((".yaml", ".yml", ".json")):
++        raise HTTPException(status_code=400, detail="Invalid file type")
+ 
+-    if not os.path.isfile(full_path):
++    if full_path.exists() and not full_path.is_file():
+         raise HTTPException(status_code=400, detail="Path is not a file")
+ 
+-    if not full_path.endswith((".yaml", ".yml", ".json")):
+-        raise HTTPException(status_code=400, detail="Invalid file type")
+-
+     try:
+-        with open(full_path, "w") as f:
+-            f.write(content["content"])
++        full_path.parent.mkdir(parents=True, exist_ok=True)
++        full_path.write_text(content["content"], encoding="utf-8")
++        invalidate_config_cache()
+         return {"status": "success"}
+     except Exception as e:
+         raise HTTPException(status_code=500, detail=str(e)) from e
+ 
+ 
++# NOTE: /config/expander and /config/expander/remove endpoints live in
++# boneio/modules/expander/routes.py and are registered from webui/app.py.
++
++
+ @router.post("/config/validate_device_type_change")
+ async def validate_device_type_change(request: dict = Body(...)):
+     """

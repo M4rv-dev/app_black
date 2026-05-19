@@ -164,7 +164,8 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
             label: t('settings.basic_settings'),
             content: (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <fieldset className="fieldset border border-base-300 rounded-box p-4 space-y-3">
+                  <legend className="fieldset-legend">{t('settings.basic_settings')}</legend>
                   {/* Display Name */}
                   <div className="form-control">
                     <label className="label">
@@ -392,7 +393,7 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
                     onChange={(v) => updateField('area', v)}
                     areas={allAreas}
                   />
-                </div>
+                </fieldset>
 
                 {/* ---- Options ---- */}
                 <div className="divider">{t('settings.options')}</div>

@@ -1,0 +1,265 @@
+# Schema extension for the remote_mqtt module.
+#
+# Deep-merged into the main schema at startup by
+# ``boneio.core.config.yaml_util._apply_module_schema_extensions``. Adds all
+# fields needed for generic MQTT remote devices on top of the upstream
+# ``remote_devices.yaml`` schema, without touching upstream files.
+#
+# Structure mirrors the schema path it merges into. Keys that already exist
+# upstream (e.g. ``mqtt.schema.outputs``) get their inner fields extended;
+# brand-new keys (``inputs``, ``sensors``, ``topic_prefix``) are added.
+#
+# Compatible with both boneIO-style MQTT devices (which only declare id+name
+# under each list) and generic MQTT devices (which add topic/template fields).
+
+remote_devices:
+  schema:
+    schema:
+      mqtt:
+        schema:
+          topic_prefix:
+            type: string
+            required: False
+            meta:
+              label: Topic prefix
+              description: |
+                Optional MQTT topic prefix shared by all entries (e.g. "n64/88").
+                Used by the device-form UI to scope the "Browse broker" workflow;
+                has no runtime effect — actual topics are stored per-input/output.
+          inputs:
+            type: list
+            required: False
+            meta:
+              label: Available Inputs
+              description: |
+                Inputs exposed by this device. For boneIO-style devices, only the
+                id/name pair is meaningful (the bus handles topic conventions).
+                For generic MQTT devices the topic + value_template + payload_on/off
+                fields define how each input is read from the broker.
+            schema:
+              type: dict
+              schema:
+                id:
+                  type: string
+                  required: True
+                  meta:
+                    label: Input ID
+                name:
+                  type: string
+                  required: False
+                  meta:
+                    label: Input Name (for UI)
+                topic:
+                  type: string
+                  required: False
+                  meta:
+                    label: MQTT Topic (generic_mqtt)
+                value_template:
+                  type: string
+                  required: False
+                  meta:
+                    label: Jinja2 value_template (generic_mqtt)
+                payload_on:
+                  type: string
+                  required: False
+                  meta:
+                    label: payload_on
+                payload_off:
+                  type: string
+                  required: False
+                  meta:
+                    label: payload_off
+                qos:
+                  type: integer
+                  required: False
+                  allowed: [0, 1, 2]
+                  meta:
+                    label: QoS
+          outputs:
+            # Upstream defines outputs as list of {id, name}. We extend each
+            # row with topic + command_template + state feedback + qos/retain
+            # via deep-merge on the inner item schema.
+            schema:
+              schema:
+                topic:
+                  type: string
+                  required: False
+                  meta:
+                    label: Command topic (generic_mqtt)
+                command_template:
+                  type: string
+                  required: False
+                  meta:
+                    label: Jinja2 command_template (generic_mqtt)
+                state_topic:
+                  type: string
+                  required: False
+                  meta:
+                    label: State topic (generic_mqtt, optional feedback)
+                state_value_template:
+                  type: string
+                  required: False
+                  meta:
+                    label: state_value_template (generic_mqtt)
+                state_payload_on:
+                  type: string
+                  required: False
+                  meta:
+                    label: state_payload_on
+                state_payload_off:
+                  type: string
+                  required: False
+                  meta:
+                    label: state_payload_off
+                qos:
+                  type: integer
+                  required: False
+                  allowed: [0, 1, 2]
+                  meta:
+                    label: QoS
+                retain:
+                  type: boolean
+                  required: False
+                  meta:
+                    label: Retain
+                output_type:
+                  type: string
+                  required: False
+                  allowed: ['switch', 'light', 'valve']
+                  meta:
+                    label: Output Type (HA category)
+          sensors:
+            type: list
+            required: False
+            meta:
+              label: Available Sensors
+              description: |
+                Numeric / string sensors exposed by this device (temperature,
+                humidity, power, status fields extracted from a JSON payload, …).
+                Each entry subscribes to one MQTT topic, evaluates value_template,
+                and emits a SensorEvent. remote_sensors[] references entries here
+                by device_id + sensor_id.
+            schema:
+              type: dict
+              schema:
+                id:
+                  type: string
+                  required: True
+                  meta:
+                    label: Sensor ID
+                name:
+                  type: string
+                  required: False
+                  meta:
+                    label: Sensor Name (for UI)
+                topic:
+                  type: string
+                  required: False
+                  meta:
+                    label: MQTT Topic (generic_mqtt)
+                value_template:
+                  type: string
+                  required: False
+                  meta:
+                    label: Jinja2 value_template (generic_mqtt)
+                    description: |
+                      Renders the payload into the published value. Use
+                      `{{ value }}` for raw payload or `{{ value_json.foo }}`
+                      for a JSON field. Result is coerced to float when
+                      possible, otherwise stays as string.
+                unit_of_measurement:
+                  type: string
+                  required: False
+                  meta:
+                    label: Unit (e.g. °C, %, W, V)
+                device_class:
+                  type: string
+                  required: False
+                  meta:
+                    label: HA device_class
+                    description: |
+                      Optional HA device_class (e.g. temperature, humidity,
+                      power, voltage). Drives icon and unit grouping in HA.
+                state_class:
+                  type: string
+                  required: False
+                  allowed: ['measurement', 'total', 'total_increasing']
+                  meta:
+                    label: HA state_class
+                qos:
+                  type: integer
+                  required: False
+                  allowed: [0, 1, 2]
+                  meta:
+                    label: QoS
+
+# Top-level addition: remote_sensors section (moves from boneio/schema/remote_sensors.yaml).
+remote_sensors:
+  type: list
+  required: False
+  meta:
+    label: "Remote numeric/string sensors from MQTT (and future protocols)."
+    description: |
+      Configure sensors from remote devices. Each entry references one
+      sensor declared on a remote_devices[*].mqtt.sensors[] entry and
+      exposes it as a local boneIO sensor (optionally published to HA).
+  schema:
+    type: dict
+    schema:
+      id:
+        type: string
+        required: False
+        coerce: str
+        meta:
+          label: Sensor ID
+          description: |
+            Custom ID for this remote sensor. If not set, auto-generated
+            from device_id + sensor_id.
+      name:
+        type: string
+        required: False
+        meta:
+          label: Display Name
+      remote_source:
+        type: string
+        required: True
+        allowed: ['mqtt']
+        meta:
+          label: Remote Source Protocol
+      device_id:
+        type: string
+        required: True
+        meta:
+          label: Remote Device ID
+      sensor_id:
+        type: string
+        required: True
+        meta:
+          label: Sensor ID on device
+      show_in_ha:
+        type: boolean
+        required: False
+        default: false
+        meta:
+          label: Forward to Home Assistant
+      area:
+        type: string
+        required: False
+        meta:
+          label: Area (for HA)
+      device_class:
+        type: string
+        required: False
+        meta:
+          label: Override device_class (for HA)
+      unit_of_measurement:
+        type: string
+        required: False
+        meta:
+          label: Override unit
+      state_class:
+        type: string
+        required: False
+        allowed: ['measurement', 'total', 'total_increasing']
+        meta:
+          label: Override state_class

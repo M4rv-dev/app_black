@@ -19,8 +19,12 @@ Config (host, paths) lives in `~/.config/boneio-deploy/config.toml`, written by 
 
 | Command | When |
 |---|---|
-| `inv deploy` | Standard release — snapshot → rsync → restart → healthcheck. |
+| `inv deploy-full` | **Preferred** — build frontend + snapshot → rsync → restart → healthcheck in one command. |
+| `inv deploy-full --backend-only` | Python-only change — skips frontend build (same as `inv deploy`). |
+| `inv deploy-full --frontend-only` | UI-only change — builds + installs frontend, no device rsync or restart. |
+| `inv deploy` | Backend-only deploy (no frontend build). |
 | `inv deploy --fast` | Only hot-reloadable changes (e.g. config UI), skips restart. |
+| `inv build-frontend` | Build Vite + copy to `boneio/webui/frontend-dist/` without deploying. |
 | `inv restart` | Config-only fix, no file changes. |
 | `inv status` | "Is it up?" — service state + HTTP 200 + last 5 log lines. |
 | `inv logs --follow` | Live tail. Add `--grep PATTERN` to filter. |

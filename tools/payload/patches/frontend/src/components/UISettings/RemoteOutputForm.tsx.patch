@@ -1,0 +1,146 @@
+diff --git a/frontend/src/components/UISettings/RemoteOutputForm.tsx b/frontend/src/components/UISettings/RemoteOutputForm.tsx
+index cf9f69b..94cedb3 100644
+--- a/frontend/src/components/UISettings/RemoteOutputForm.tsx
++++ b/frontend/src/components/UISettings/RemoteOutputForm.tsx
+@@ -113,9 +113,13 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
+     esphomeApi?.switches || [];
+   const availableLights: Array<{ id: string; name?: string; supports_brightness?: boolean }> =
+     esphomeApi?.lights || [];
++  // MQTT generic outputs declared on the device — same dropdown UX as ESPHome.
++  const mqttOutputs: Array<{ id: string; name?: string; output_type?: string }> =
++    (data.remote_source === 'mqtt' ? (selectedDevice as any)?.mqtt?.outputs : []) || [];
+   const allAvailableOutputs = [
+     ...availableSwitches.map(s => ({ ...s, _type: 'switch' as const })),
+     ...availableLights.map(l => ({ ...l, _type: 'light' as const })),
++    ...mqttOutputs.map(o => ({ ...o, _type: (o.output_type === 'light' ? 'light' : 'switch') as 'switch' | 'light' })),
+   ];
+ 
+   /* ---------- selected output capabilities ---------- */
+@@ -128,12 +132,15 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
+   // Lights with brightness cannot be degraded to plain switch
+   const outputTypeLocked = isLightEntity && supportsBrightness;
+ 
+-  /* ---------- devices with outputs ---------- */
++  /* ---------- devices with outputs ----------
++     Include ESPHome devices with switches/lights AND generic-MQTT
++     devices whose mqtt.outputs catalog has at least one entry. */
+   const devicesWithOutputs = allRemoteDevices.filter((device) => {
+     const api = (device as any)?.esphome_api || device;
+     const sw = api?.switches || [];
+     const li = api?.lights || [];
+-    return sw.length > 0 || li.length > 0;
++    const mq = (device as any)?.mqtt?.outputs || [];
++    return sw.length > 0 || li.length > 0 || mq.length > 0;
+   });
+ 
+   return (
+@@ -233,7 +240,9 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
+                     )}
+                   </div>
+ 
+-                  {/* Output Entity (output_id) — dropdown from selected device's switches/lights */}
++                  {/* Output Entity (output_id) — dropdown from selected device's switches/lights.
++                      For MQTT devices, also surfaces device.mqtt.outputs (managed in the
++                      device form). Hint below the dropdown points users there. */}
+                   <div className="form-control">
+                     <label className="label">
+                       <span className="label-text font-medium">{t('remote_outputs.output_entity')}</span>
+@@ -282,6 +291,18 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
+                             ))}
+                           </>
+                         )}
++                        {mqttOutputs.length > 0 && (
++                          <>
++                            <SelectItem value="_header_mqtt" disabled>
++                              📡 MQTT
++                            </SelectItem>
++                            {mqttOutputs.map((mo) => (
++                              <SelectItem key={`mq_${mo.id}`} value={mo.id}>
++                                📡 {mo.name ? `${mo.name} (${mo.id})` : mo.id}
++                              </SelectItem>
++                            ))}
++                          </>
++                        )}
+                       </SelectContent>
+                     </Select>
+                     {attemptedSubmit && !data.output_id && (
+@@ -289,33 +310,58 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
+                         <span className="label-text-alt text-error">{t('validation.required')}</span>
+                       </label>
+                     )}
++                    {data.remote_source === 'mqtt' && data.device_id && (
++                      <label className="label">
++                        <span className="label-text-alt text-xs text-base-content/60">
++                          {t('remote_mqtt.outputs_from_device_hint') ||
++                            'Outputs are managed on the device. Add / edit them in Remote Devices → MQTT settings.'}
++                        </span>
++                      </label>
++                    )}
+                   </div>
+ 
+-                  {/* Output Type */}
++                  {/* Output Type — for MQTT generic outputs the type is
++                      declared on the device's mqtt.outputs catalog; reading
++                      it here as a Select duplicates that source of truth and
++                      confuses the user. Show as a read-only badge instead. */}
+                   <div className="form-control">
+                     <label className="label">
+                       <span className="label-text font-medium">{t('remote_outputs.output_type')}</span>
+                     </label>
+-                    <Select
+-                      value={data.output_type || 'switch'}
+-                      onValueChange={(v) => updateField('output_type', v)}
+-                    >
+-                      <SelectTrigger className="w-full">
+-                        <SelectValue />
+-                      </SelectTrigger>
+-                      <SelectContent>
+-                        <SelectItem value="switch" disabled={outputTypeLocked}>{t('outputs.categories.switches')}</SelectItem>
+-                        <SelectItem value="light">{t('outputs.categories.lights')}</SelectItem>
+-                        <SelectItem value="valve" disabled={outputTypeLocked}>{t('outputs.categories.valves')}</SelectItem>
+-                      </SelectContent>
+-                    </Select>
+-                    <label className="label">
+-                      <span className="label-text-alt">
+-                        {outputTypeLocked
+-                          ? t('remote_outputs.output_type_locked_hint')
+-                          : t('remote_outputs.output_type_hint')}
+-                      </span>
+-                    </label>
++                    {data.remote_source === 'mqtt' ? (
++                      <div className="flex items-center gap-2 py-2">
++                        <span className="badge badge-info badge-lg">
++                          {data.output_type || 'switch'}
++                        </span>
++                        <span className="text-xs text-base-content/60">
++                          {t('remote_outputs.output_type_from_device_hint') ||
++                           'Set on the device\'s output catalog. Edit there to change.'}
++                        </span>
++                      </div>
++                    ) : (
++                      <>
++                        <Select
++                          value={data.output_type || 'switch'}
++                          onValueChange={(v) => updateField('output_type', v)}
++                        >
++                          <SelectTrigger className="w-full">
++                            <SelectValue />
++                          </SelectTrigger>
++                          <SelectContent>
++                            <SelectItem value="switch" disabled={outputTypeLocked}>{t('outputs.categories.switches')}</SelectItem>
++                            <SelectItem value="light">{t('outputs.categories.lights')}</SelectItem>
++                            <SelectItem value="valve" disabled={outputTypeLocked}>{t('outputs.categories.valves')}</SelectItem>
++                          </SelectContent>
++                        </Select>
++                        <label className="label">
++                          <span className="label-text-alt">
++                            {outputTypeLocked
++                              ? t('remote_outputs.output_type_locked_hint')
++                              : t('remote_outputs.output_type_hint')}
++                          </span>
++                        </label>
++                      </>
++                    )}
+                   </div>
+ 
+                   {/* On Disconnect */}

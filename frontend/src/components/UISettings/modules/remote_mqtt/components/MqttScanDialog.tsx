@@ -8,7 +8,7 @@
  * Presentational so an alternative skin can swap it without rewriting logic.
  */
 import React, { useMemo, useState } from 'react';
-import { FaSync, FaSearch, FaExclamationTriangle, FaChevronRight, FaChevronDown } from 'react-icons/fa';
+import { FaSync, FaSearch, FaExclamationTriangle, FaChevronRight, FaChevronDown, FaTimes } from 'react-icons/fa';
 import { useTranslation } from '@/hooks/useTranslation';
 import {
   Dialog,
@@ -182,14 +182,25 @@ const MqttScanDialog: React.FC<MqttScanDialogProps> = ({ open, onOpenChange, ini
           {scan.results.length > 0 && (
             <>
               <div className="flex items-center justify-between gap-2 mt-2 mb-1">
-                <div className="flex-1 max-w-md">
+                <div className="flex-1 max-w-md relative">
+                  <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/40 w-3.5 h-3.5 pointer-events-none" />
                   <input
                     type="text"
-                    className="input input-bordered input-sm w-full"
+                    className="input input-bordered input-sm w-full pl-9 pr-8"
                     placeholder={t('remote_mqtt.filter_placeholder') || 'Filter topics or payloads…'}
                     value={filter}
                     onChange={(e) => setFilter(e.target.value)}
                   />
+                  {filter && (
+                    <button
+                      type="button"
+                      onClick={() => setFilter('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs btn-circle"
+                      aria-label="Clear filter"
+                    >
+                      <FaTimes className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
                 <span className="text-xs text-base-content/60 whitespace-nowrap">
                   {filteredResults.length === scan.results.length

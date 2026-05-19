@@ -1,0 +1,72 @@
+diff --git a/boneio/core/manager/manager.py b/boneio/core/manager/manager.py
+index 72cc1f8..506783e 100644
+--- a/boneio/core/manager/manager.py
++++ b/boneio/core/manager/manager.py
+@@ -61,6 +61,17 @@ if TYPE_CHECKING:
+ _LOGGER = logging.getLogger(__name__)
+ 
+ 
++def _make_mqtt_reload_handler(manager_self, section: str):
++    """Build a closure that routes a reload-dispatcher entry to the remote_mqtt
++    module. Lives at module-level so the dispatcher dict in `reload_config`
++    stays one-liner per section."""
++    async def _handler():
++        from boneio.modules.remote_mqtt import manager_integration as _mod
++        if section == "remote_sensors":
++            await _mod.reload_remote_sensors(manager_self)
++    return _handler
++
++
+ class Manager:
+     """Main application manager - orchestrates all subsystems.
+ 
+@@ -271,6 +282,10 @@ class Manager:
+         # Register remote outputs (must be after OutputManager and RemoteDeviceManager,
+         # but before IrrigationManager which needs to find remote outputs in OutputManager)
+         self.register_remote_outputs()
++        # Boot module-provided integrations (e.g. modules/remote_mqtt registers
++        # generic MQTT sensors, additional reload handlers, etc.)
++        from boneio.modules.remote_mqtt import manager_integration as _remote_mqtt_mod
++        _remote_mqtt_mod.setup(self)
+ 
+         self.templates = TemplateManager(
+             manager=self,
+@@ -1323,10 +1338,15 @@ class Manager:
+         # Clean up old remote inputs and outputs before reload
+         self.inputs.unregister_remote_inputs()
+         self.unregister_remote_outputs()
++        # Module-owned cleanup (MQTT generic sensors, etc.)
++        from boneio.modules.remote_mqtt import manager_integration as _remote_mqtt_mod
++        _remote_mqtt_mod.teardown_on_devices_reload(self)
+         await self.remote_devices.reload(remote_devices_config)
+         # Re-register remote inputs and outputs from config
+         self.register_remote_inputs()
+         self.register_remote_outputs()
++        # Module-owned setup (MQTT generic sensors, etc.)
++        _remote_mqtt_mod.setup_on_devices_reload(self)
+         # Broadcast all input states so frontend picks up new/removed remote inputs
+         self.inputs._broadcast_all_input_states()
+         _LOGGER.info("Remote devices configuration reloaded successfully")
+@@ -1419,6 +1439,13 @@ class Manager:
+                 )
+                 continue
+ 
++            # Module-provided protocols handle their own setup. If a module
++            # claims this row (e.g. remote_mqtt for `remote_source == "mqtt"`),
++            # skip the standard device-manager flow below.
++            from boneio.modules.remote_mqtt.manager_integration import try_setup_mqtt_output
++            if try_setup_mqtt_output(self, out_cfg, entity_id):
++                continue
++
+             remote_output = RemoteOutputBase(
+                 id=entity_id,
+                 name=name,
+@@ -1617,6 +1644,8 @@ class Manager:
+             "remote_devices": self._reload_remote_devices,  # Remote devices configuration
+             "remote_inputs": self._reload_remote_inputs,  # Remote inputs (binary sensors from remote devices)
+             "remote_outputs": self._reload_remote_outputs,  # Remote outputs (switches/lights from remote devices)
++            # Module-owned reload handler — keeps MQTT-specific code out of manager.py
++            "remote_sensors": _make_mqtt_reload_handler(self, "remote_sensors"),
+             "template": self._reload_templates_and_irrigation,  # Thermostats, alarm panels, and irrigation
+             "irrigation": self.irrigation.reload_irrigation,  # Irrigation controllers
+             "adc": self.sensors.reload_adc_sensors,  # ADC analog sensors

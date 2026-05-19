@@ -1,4 +1,6 @@
 import { useContext, memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import SkeletonGrid from './SkeletonGrid';
+import { useWsStatus } from '../hooks/useWsStatus';
 import { useNavigate } from 'react-router-dom';
 import { WebSocketContext } from '../App';
 import { formatTimestamp } from '../utils/formatters';
@@ -6,7 +8,7 @@ import ViewToggle from './ViewToggle';
 import { isInputEvent, InputEvent } from '../hooks/useWebSocket';
 import clsx from 'clsx';
 import { useTranslation } from '../hooks/useTranslation';
-import { FaSortAmountDown, FaSortAlphaDown, FaClock, FaCopy, FaCog, FaWifi } from 'react-icons/fa';
+import { FaSortAmountDown, FaSortAlphaDown, FaClock, FaCopy, FaCog, FaWifi, FaSearch, FaTimes } from 'react-icons/fa';
 import {
   Dialog,
   DialogContent,
@@ -358,23 +360,35 @@ export default function InputsView() {
   );
   const hasBothSections = localInputs.length > 0 && remoteInputs.length > 0;
 
+  const [search, setSearch] = useState('');
+  const { isConnected } = useWsStatus();
+  const [seenData, setSeenData] = useState(false);
+  useEffect(() => { if (validInputs.length > 0) setSeenData(true); }, [validInputs]);
+
   if (validInputs.length === 0) {
+    const isLoading = !seenData && !isConnected;
     return (
       <div className="container mx-auto p-4">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-bold">{t('inputs.title')}</h2>
         </div>
-        <div>
-          No inputs configured.
-        </div>
-      </div>)
+        {isLoading
+          ? <SkeletonGrid count={6} list />
+          : <div className="text-center py-8 text-base-content/60">No inputs configured.</div>
+        }
+      </div>);
   }
+
+  const searchLower = search.toLowerCase();
+  const filteredLocal = searchLower ? localInputs.filter(i => (i.state.name || '').toLowerCase().includes(searchLower)) : localInputs;
+  const filteredRemote = searchLower ? remoteInputs.filter(i => (i.state.name || '').toLowerCase().includes(searchLower)) : remoteInputs;
 
   return (
     <div className="container mx-auto p-4">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-bold">{t('inputs.title')}</h2>
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-3 mb-4">
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-bold">{t('inputs.title')}</h2>
+          <div className="flex items-center gap-2">
           {/* Sort dropdown */}
           <div className="dropdown dropdown-end">
             <label tabIndex={0} className="btn btn-sm btn-ghost gap-1">
@@ -402,10 +416,31 @@ export default function InputsView() {
             </ul>
           </div>
           <ViewToggle isGrid={isGrid} onToggle={handleViewToggle} />
+          </div>
+        </div>
+        {/* Search bar */}
+        <div className="relative">
+          <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-base-content/40 w-3.5 h-3.5 pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder={t('inputs.search_placeholder') || 'Search inputs…'}
+            className="input input-sm input-bordered w-full pl-9 pr-8"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs btn-circle"
+              aria-label="Clear search"
+            >
+              <FaTimes className="w-3 h-3" />
+            </button>
+          )}
         </div>
       </div>
       {/* Local inputs section */}
-      {localInputs.length > 0 && (
+      {filteredLocal.length > 0 && (
         <>
           {hasBothSections && (
             <h3 className="text-lg font-semibold mb-2 mt-2">{t('inputs.local_inputs')}</h3>
@@ -414,7 +449,7 @@ export default function InputsView() {
             ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-4"
             : "flex flex-col gap-4"
           }>
-            {localInputs.map((inputEvent: InputEvent) => (
+            {filteredLocal.map((inputEvent: InputEvent) => (
               <InputItem
                 key={inputEvent.entity_id}
                 inputEvent={inputEvent}
@@ -431,7 +466,7 @@ export default function InputsView() {
       )}
 
       {/* Remote inputs section */}
-      {remoteInputs.length > 0 && (
+      {filteredRemote.length > 0 && (
         <>
           <h3 className="text-lg font-semibold mb-2 mt-6 flex items-center gap-2">
             <FaWifi className="w-4 h-4 text-purple-400" />
@@ -441,7 +476,7 @@ export default function InputsView() {
             ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-4"
             : "flex flex-col gap-4"
           }>
-            {remoteInputs.map((inputEvent: InputEvent) => (
+            {filteredRemote.map((inputEvent: InputEvent) => (
               <InputItem
                 key={inputEvent.entity_id}
                 inputEvent={inputEvent}

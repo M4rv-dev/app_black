@@ -154,11 +154,11 @@ app.include_router(templates_router)
 app.include_router(tools_router)
 app.include_router(migrations_router)
 
-# Extension modules (live in boneio/modules/<feature>/)
-from boneio.modules.expander import register_routes as register_expander_routes
-register_expander_routes(app)
-from boneio.modules.remote_mqtt import register_routes as register_remote_mqtt_routes
-register_remote_mqtt_routes(app)
+# Extension modules — auto-discovered via ModuleRegistry (boneio/modules/_registry.py).
+# To add a new module: implement register_routes(app) in its __init__.py or
+# manager_integration.py, then call ModuleRegistry.get().register(module).
+from boneio.modules._registry import ModuleRegistry
+ModuleRegistry.get().register_routes(app)
 
 
 # Override get_manager dependency in routers using FastAPI dependency_overrides

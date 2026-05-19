@@ -1,0 +1,265 @@
+diff --git a/boneio/hardware/display/oled.py b/boneio/hardware/display/oled.py
+index 5c101af..9aebbe2 100644
+--- a/boneio/hardware/display/oled.py
++++ b/boneio/hardware/display/oled.py
+@@ -4,6 +4,8 @@ import asyncio
+ import contextlib
+ import logging
+ import subprocess
++import threading
++import time
+ from itertools import cycle
+ from typing import TYPE_CHECKING
+ 
+@@ -130,14 +132,48 @@ class Oled:
+         # Initialize I2C display (reuse early device if provided)
+         if device is not None:
+             self._device = device
+-            _LOGGER.debug("OLED display reusing early-initialized device")
++            _LOGGER.info("OLED display reusing early-initialized sh1106 device")
+         else:
+-            try:
+-                serial = i2c(port=2, address=0x3C)
+-                self._device = sh1106(serial)
+-                _LOGGER.debug("OLED display initialized successfully")
+-            except (DeviceNotFoundError, OSError) as err:
+-                raise I2CError(f"OLED display not found: {err}") from err
++            # SH1106 init sends ~30 commands over i2c — on a contended bus
++            # (other drivers booting in parallel: LM75, INA219, MCP23017)
++            # the controller occasionally returns EREMOTEIO mid-sequence. The
++            # hardware is actually fine (a tight single-threaded loop hits it
++            # at 100% success rate post-boot), so a short retry with backoff
++            # is enough to ride out the boot-time contention without crashing
++            # the DisplayManager.
++            # Total ramp here is ~14s (0.2 + 0.4 + 0.6 + ... + 2.0 = 11s plus
++            # the time spent in the failed sh1106(serial) sequence itself).
++            # Cold-boot i2c bus on the BBB+capes is genuinely unstable for
++            # several seconds while parallel drivers (LM75, INA219, MCP23017)
++            # finish their own probes — anything shorter loses the race.
++            last_err: Exception | None = None
++            for attempt in range(10):
++                try:
++                    serial = i2c(port=2, address=0x3C)
++                    self._device = sh1106(serial)
++                    if attempt > 0:
++                        _LOGGER.info("OLED display initialized after %d retries", attempt)
++                    else:
++                        _LOGGER.info("OLED display initialized successfully")
++                    break
++                except (DeviceNotFoundError, OSError) as err:
++                    last_err = err
++                    _LOGGER.debug(
++                        "OLED init attempt %d failed (%s), retrying...",
++                        attempt + 1, err,
++                    )
++                    # Linear ramp 200ms → 2000ms (cap so we don't sleep forever).
++                    time.sleep(min(0.2 * (attempt + 1), 2.0))
++            else:
++                raise I2CError(f"OLED display not found after 10 attempts: {last_err}") from last_err
++
++        # Re-entrant lock guards every `canvas(self._device)` write — luma
++        # opens its own SMBus handle that doesn't share the app's i2c bus lock,
++        # so without this guard two draw paths (button handler + periodic
++        # refresh) race on `/dev/i2c-2` and the kernel returns EREMOTEIO (121),
++        # EAGAIN (11) or ETIMEDOUT (110) on a collision. Use RLock so a method
++        # can call into another locked helper without self-deadlocking.
++        self._draw_lock = threading.RLock()
+ 
+         # Subscribe to OLED button events
+         self._event_bus.add_event_listener(
+@@ -147,6 +183,52 @@ class Oled:
+             target=self._handle_button_press,
+         )
+ 
++    # ------------------------------------------------------------------
++    # i2c-safe draw helpers
++    # ------------------------------------------------------------------
++
++    @contextlib.contextmanager
++    def _locked_canvas(self):
++        """Acquire ``_draw_lock`` then ``canvas(self._device)``.
++
++        Replaces every direct ``with canvas(self._device) as draw:`` so that
++        only one writer touches the SH1106 over i2c at a time.
++        Used as: ``with self._locked_canvas() as draw: …``.
++        """
++        with self._draw_lock:
++            with canvas(self._device) as draw:
++                yield draw
++
++    def _safe_draw(self, draw_callable, *, label: str, retries: int = 2) -> bool:
++        """Execute ``draw_callable(draw)`` inside a locked canvas, retry on
++        transient i2c errors (EAGAIN/ETIMEDOUT/EREMOTEIO) up to ``retries``
++        times with exponential backoff.
++
++        Returns True on success, False if all attempts failed. Logs a warning
++        on terminal failure so the OLED journal stays diagnosable. Used by
++        the periodic refresh paths where dropping a frame is preferable to
++        crashing the loop.
++        """
++        for attempt in range(retries + 1):
++            try:
++                with self._locked_canvas() as draw:
++                    draw_callable(draw)
++                return True
++            except OSError as exc:
++                if exc.errno in (11, 110, 121) and attempt < retries:
++                    _LOGGER.debug(
++                        "OLED %s: transient i2c errno %d, retry %d/%d",
++                        label, exc.errno, attempt + 1, retries,
++                    )
++                    time.sleep(0.01 * (2 ** attempt))
++                    continue
++                _LOGGER.warning(
++                    "OLED %s failed after %d attempt(s): %s",
++                    label, attempt + 1, exc,
++                )
++                return False
++        return False
++
+     async def _output_callback(self, event: OutputState) -> None:
+         """Callback for output events."""
+         if self._grouped_outputs_by_expander and self._current_screen in self._grouped_outputs_by_expander:
+@@ -361,7 +443,7 @@ class Oled:
+         Shows a warning message asking the user to hold the button
+         for 5 seconds to confirm system shutdown.
+         """
+-        with canvas(self._device) as draw:
++        with self._locked_canvas() as draw:
+             # Warning triangle
+             draw.polygon([(64, 2), (54, 18), (74, 18)], outline=WHITE)
+             draw.text((61, 5), "!", font=fonts["small"], fill=WHITE)
+@@ -384,7 +466,7 @@ class Oled:
+         bar_w, bar_h = 108, 14
+         fill_w = int(bar_w * progress)
+ 
+-        with canvas(self._device) as draw:
++        with self._locked_canvas() as draw:
+             draw.text((20, 4), "Shutting down...", font=fonts["small"], fill=WHITE)
+             draw.text((28, 18), f"{int(progress * 100)}%", font=fonts["small"], fill=WHITE)
+             # Progress bar outline
+@@ -469,7 +551,7 @@ class Oled:
+         self._cancel_shutdown_timeout()
+ 
+         # Draw goodbye screen
+-        with canvas(self._device) as draw:
++        with self._locked_canvas() as draw:
+             draw.text((20, 10), "Goodbye!", font=fonts["big"], fill=WHITE)
+             draw.text((15, 35), "System shutting down...", font=fonts["extraSmall"], fill=WHITE)
+ 
+@@ -486,7 +568,7 @@ class Oled:
+         except subprocess.CalledProcessError as e:
+             _LOGGER.error("Failed to shutdown device: %s", e.stderr)
+             # Show error on OLED and return to normal
+-            with canvas(self._device) as draw:
++            with self._locked_canvas() as draw:
+                 draw.text((10, 20), "Shutdown failed!", font=fonts["small"], fill=WHITE)
+                 draw.text((10, 40), str(e.stderr)[:20], font=fonts["extraSmall"], fill=WHITE)
+             await asyncio.sleep(3)
+@@ -495,6 +577,19 @@ class Oled:
+             _LOGGER.error("Error shutting down device: %s", e)
+             self.render_display()
+ 
++    def clear_display(self) -> None:
++        """Wipe the SH1106 framebuffer to black.
++
++        Called once during handoff from early_oled — any leftover splash from
++        the boot screen would otherwise stay behind the first DisplayManager
++        paint and look like overlapping text. Uses the same lock as draws.
++        """
++        with self._draw_lock:
++            try:
++                self._device.clear()
++            except OSError as exc:
++                _LOGGER.warning("OLED clear failed (%s) — first paint will overwrite", exc)
++
+     def render_display(self) -> None:
+         """Render display - main method that decides what to display."""
+ 
+@@ -503,7 +598,7 @@ class Oled:
+             if self._current_screen == "web":
+                 self._draw_qr_code(url=str(data))
+             elif isinstance(data, dict):
+-                with canvas(self._device) as draw:
++                with self._locked_canvas() as draw:
+                     if self._grouped_outputs_by_expander and self._current_screen in self._grouped_outputs_by_expander:
+                         self._draw_output(data, draw)
+                         for id in data:
+@@ -545,29 +640,41 @@ class Oled:
+             self.start_sleep_timer()
+ 
+     def _update_display(self) -> None:
+-        """Update OLED display without re-registering listeners."""
++        """Update OLED display without re-registering listeners.
++
++        Periodic / event-driven refresh — dropping a frame on transient i2c
++        contention beats killing the loop. Uses ``_safe_draw`` so EAGAIN /
++        ETIMEDOUT / EREMOTEIO get retried with backoff and only escalate to
++        a warning if all retries fail.
++        """
+         if self._sleep:
+             return
+ 
+-        try:
+-            data = self._host_data.get(self._current_screen)
+-            if not data:
+-                return
++        data = self._host_data.get(self._current_screen)
++        if not data:
++            return
+ 
+-            if self._current_screen == "web":
++        if self._current_screen == "web":
++            try:
+                 self._draw_qr_code(url=str(data))
+-            elif isinstance(data, dict):
+-                with canvas(self._device) as draw:
+-                    if self._grouped_outputs_by_expander and self._current_screen in self._grouped_outputs_by_expander:
+-                        self._draw_output(data, draw)
+-                    elif self._current_screen == UPTIME:
+-                        self._draw_uptime(draw)
+-                    elif self._input_groups and self._current_screen in self._input_groups:
+-                        self._draw_input(data, draw)
+-                    else:
+-                        self._draw_standard(data, draw)
+-        except Exception as e:
+-            _LOGGER.error(f"Failed to update OLED display: {e}")
++            except Exception as e:  # noqa: BLE001
++                _LOGGER.error("Failed to update OLED QR display: %s", e)
++            return
++
++        if not isinstance(data, dict):
++            return
++
++        def _do_draw(draw: ImageDrawType) -> None:
++            if self._grouped_outputs_by_expander and self._current_screen in self._grouped_outputs_by_expander:
++                self._draw_output(data, draw)
++            elif self._current_screen == UPTIME:
++                self._draw_uptime(draw)
++            elif self._input_groups and self._current_screen in self._input_groups:
++                self._draw_input(data, draw)
++            else:
++                self._draw_standard(data, draw)
++
++        self._safe_draw(_do_draw, label="_update_display")
+ 
+     def _draw_standard(self, data: dict, draw: ImageDrawType) -> None:
+         """Draw standard information about host screen."""
+@@ -647,7 +754,7 @@ class Oled:
+         """Sleep callback."""
+         self._sleep = True
+         self._cancel_sleep_handle = None
+-        with canvas(self._device) as draw:
++        with self._locked_canvas() as draw:
+             draw.rectangle(self._device.bounding_box, outline="black", fill="black")
+         _LOGGER.debug("OLED display sleeping")
+ 
+@@ -669,7 +776,7 @@ class Oled:
+             self._cancel_sleep_handle()
+         # Clear display
+         try:
+-            with canvas(self._device) as draw:
++            with self._locked_canvas() as draw:
+                 draw.rectangle([0, 0, 127, 63], outline=0, fill=0)
+         except Exception as e:
+             _LOGGER.error(f"Failed to shutdown OLED display: {e}")

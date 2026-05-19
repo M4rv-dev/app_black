@@ -1,0 +1,54 @@
+diff --git a/frontend/src/components/UISettings/components/SectionContent.tsx b/frontend/src/components/UISettings/components/SectionContent.tsx
+index ae4d8d6..600a918 100644
+--- a/frontend/src/components/UISettings/components/SectionContent.tsx
++++ b/frontend/src/components/UISettings/components/SectionContent.tsx
+@@ -95,6 +95,7 @@ function ArraySectionContent({
+       allVirtualEnergySensors={formData.virtual_energy_sensor || []}
+       allRemoteDevices={formData.remote_devices || []}
+       allRemoteInputs={formData.remote_inputs || []}
++      mcp23017={formData.mcp23017 || []}
+       savedOutputs={[...(originalData.output || []), ...(originalData.remote_outputs || [])]}
+       savedOutputGroups={originalData.output_group || []}
+       savedCovers={normalizeCovers(originalData.cover || [])}
+@@ -125,6 +126,9 @@ function CustomFormContent({
+         <BoneIOForm
+           data={formData[activeSection]}
+           onChange={handleChange}
++          allOutputs={formData.output || []}
++          allEvents={formData.event || []}
++          allBinarySensors={formData.binary_sensor || []}
+         />
+       );
+     case 'mqtt':
+@@ -165,13 +169,6 @@ function CustomFormContent({
+           onChange={handleChange}
+         />
+       );
+-    case 'mcp23017':
+-      return (
+-        <Mcp23017Form
+-          data={formData[activeSection] || []}
+-          onChange={handleChange}
+-        />
+-      );
+     case 'oled':
+       return (
+         <OledForm
+@@ -226,6 +223,17 @@ export default function SectionContent({
+     );
+   }
+ 
++  // mcp23017 needs onSaveSection for atomic add/remove of expander (mcp + outputs together)
++  if (activeSection === 'mcp23017') {
++    return (
++      <Mcp23017Form
++        data={formData[activeSection] || []}
++        onChange={(data) => onSectionChange(activeSection, data)}
++        allOutputs={formData.output || []}
++      />
++    );
++  }
++
+   // Custom form sections
+   return (
+     <CustomFormContent

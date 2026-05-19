@@ -1,0 +1,13 @@
+diff --git a/boneio/schema/remote_devices.yaml b/boneio/schema/remote_devices.yaml
+index f920dab..5a8a58d 100644
+--- a/boneio/schema/remote_devices.yaml
++++ b/boneio/schema/remote_devices.yaml
+@@ -100,7 +100,7 @@ schema:
+                 required: False
+                 meta:
+                   label: Cover Name (for UI)
+-    
++
+     # =========================================================================
+     # FUTURE PROTOCOLS - NOT YET IMPLEMENTED
+     # Below are planned protocol configurations for future implementation.

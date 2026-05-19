@@ -1,0 +1,110 @@
+diff --git a/frontend/src/components/UISettings/ArrayTableWidget.tsx b/frontend/src/components/UISettings/ArrayTableWidget.tsx
+index 2b0f0ad..42a7fd7 100644
+--- a/frontend/src/components/UISettings/ArrayTableWidget.tsx
++++ b/frontend/src/components/UISettings/ArrayTableWidget.tsx
+@@ -15,6 +15,7 @@ import {
+ import { useItemActions } from './hooks/useItemActions';
+ import { useImportExport } from './hooks/useImportExport';
+ import { validateItem, areAllItemsUsed } from './helpers/itemValidation';
++import { OutputAddButton, isExpanderOutput, useOutputKind, EXPANDER_OUTPUT_PREFIX } from './modules/expander';
+ import FormRenderer from './components/FormRenderer';
+ import TableRenderer from './components/TableRenderer';
+ import DeleteConfirmDialog from './components/DeleteConfirmDialog';
+@@ -33,7 +34,7 @@ export interface ArrayTableWidgetProps {
+   schema: any;
+   title?: string;
+   uiSchema?: any;
+-  sectionType?: 'binary_sensor' | 'event' | 'local_inputs' | 'remote_inputs' | 'remote_outputs' | 'output' | 'output_group' | 'cover' | 'modbus_devices' | 'areas' | 'sensor' | 'virtual_energy_sensor' | 'remote_devices' | 'template' | 'adc' | 'board_sensors' | 'other';
++  sectionType?: 'binary_sensor' | 'event' | 'local_inputs' | 'remote_inputs' | 'remote_outputs' | 'remote_sensors' | 'output' | 'output_group' | 'cover' | 'modbus_devices' | 'areas' | 'sensor' | 'virtual_energy_sensor' | 'remote_devices' | 'template' | 'adc' | 'board_sensors' | 'other';
+   deviceType?: string;
+   allBinarySensors?: any[];
+   allEvents?: any[];
+@@ -62,6 +63,8 @@ export interface ArrayTableWidgetProps {
+   editItemName?: string;
+   /** Callback when edit item has been opened (to clear URL query param) */
+   onEditItemOpened?: () => void;
++  /** MCP23017 expander definitions for output hardware routing */
++  mcp23017?: Array<{ id?: string }>;
+ }
+ 
+ /** Check if section is an input-type (binary_sensor, event, or merged local_inputs). */
+@@ -72,7 +75,7 @@ const isInputSection = (s: string) => s === 'binary_sensor' || s === 'event' ||
+  * Uses regular table with Edit buttons, @rjsf form only appears in modal.
+  * This prevents automatic onChange calls during editing.
+  */
+-const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChange, schema, title, uiSchema, sectionType = 'other', deviceType, allBinarySensors = [], allEvents = [], allOutputs = [], allOutputGroups = [], allCovers = [], allAreas = [], allSensors = [], allModbusDevices = [], allVirtualEnergySensors = [], allRemoteDevices = [], allRemoteInputs = [], savedOutputs, savedOutputGroups, savedCovers, onUpdateEvents, onUpdateBinarySensors, onSaveSection, editItemName, onEditItemOpened }) => {
++const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChange, schema, title, uiSchema, sectionType = 'other', deviceType, allBinarySensors = [], allEvents = [], allOutputs = [], allOutputGroups = [], allCovers = [], allAreas = [], allSensors = [], allModbusDevices = [], allVirtualEnergySensors = [], allRemoteDevices = [], allRemoteInputs = [], mcp23017 = [], savedOutputs, savedOutputGroups, savedCovers, onUpdateEvents, onUpdateBinarySensors, onSaveSection, editItemName, onEditItemOpened }) => {
+   const { t } = useTranslation();
+   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+   const [editingItem, setEditingItem] = useState<any>(null);
+@@ -93,6 +96,7 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
+   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+   const editItemProcessedRef = useRef<string | null>(null);
+   const [wizardCopied, setWizardCopied] = useState(false);
++  // outputKind is derived from editingItem via useOutputKind — no manual state to keep in sync.
+ 
+   // Extracted hooks
+   const { findItemsUsingArea, findAffectedActions, removeOrphanedActions } = useItemActions({
+@@ -192,6 +196,7 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
+       item.name = item.id;
+       delete item.id;
+     }
++    // outputKind is derived from editingItem (via useOutputKind) — nothing to set here.
+     setEditingItem(item);
+     setEditingIndex(index);
+     originalItemRef.current = JSON.stringify(item);
+@@ -200,6 +205,19 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
+     setIsModalOpen(true);
+   };
+ 
++  const handleAddOutput = (kind: 'board' | 'expander') => {
++    // Pre-fill boneio_output with the expander prefix so useOutputKind derives 'expander'
++    // immediately. Board kind = empty object, derives to 'board' by default.
++    setEditingIndex(null);
++    setEditingItem(kind === 'expander' ? { boneio_output: EXPANDER_OUTPUT_PREFIX } : {});
++    originalItemRef.current = null;
++    setHasValidationErrors(false);
++    setAttemptedSubmit(false);
++    setIsModalOpen(true);
++  };
++
++  const outputKind = useOutputKind(editingItem);
++
+   const handleAdd = () => {
+     setEditingIndex(null);
+     if (sectionType === 'remote_devices') {
+@@ -449,13 +467,18 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
+             </div>
+           )}
+ 
+-          <div className={`tooltip tooltip-left ${allUsed ? 'tooltip-warning' : 'tooltip-info'}`}
+-            data-tip={allUsed ? (sectionType === 'output' ? t('outputs.all_outputs_used') : t('inputs.all_inputs_used')) : t('settings.add_new')}>
+-            <button onClick={handleAdd} className="btn btn-primary btn-sm" disabled={allUsed}>
+-              <FaPlus className="mr-2" />
+-              {t('settings.add_new')}
+-            </button>
+-          </div>
++          {/* Add new button — module-owned dropdown when expander exists; plain button otherwise */}
++          {sectionType === 'output' && value.some(isExpanderOutput) ? (
++            <OutputAddButton outputs={value} deviceType={deviceType} onAdd={handleAddOutput} />
++          ) : (
++            <div className={`tooltip tooltip-left ${allUsed ? 'tooltip-warning' : 'tooltip-info'}`}
++              data-tip={allUsed ? (sectionType === 'output' ? t('outputs.all_outputs_used') : t('inputs.all_inputs_used')) : t('settings.add_new')}>
++              <button onClick={handleAdd} className="btn btn-primary btn-sm" disabled={allUsed}>
++                <FaPlus className="mr-2" />
++                {t('settings.add_new')}
++              </button>
++            </div>
++          )}
+         </div>
+       </div>
+ 
+@@ -532,6 +555,8 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
+                 value={value}
+                 interlockGroups={interlockGroups}
+                 availableDallasSensors={availableDallasSensors}
++                outputKind={outputKind}
++                mcp23017={mcp23017}
+                 onChange={setEditingItem}
+                 onSave={handleSave}
+                 onCancel={handleCancel}

@@ -1,0 +1,16 @@
+diff --git a/boneio/schema/remote_outputs.yaml b/boneio/schema/remote_outputs.yaml
+index 7330a89..931b91a 100644
+--- a/boneio/schema/remote_outputs.yaml
++++ b/boneio/schema/remote_outputs.yaml
+@@ -91,6 +91,11 @@ schema:
+           What to do when the remote device loses connection:
+           - ignore: Keep last known state (default)
+           - turn_off: Force output OFF (safe for pumps/irrigation)
++          For generic MQTT outputs, all wiring (command_topic,
++          command_template, optional state_topic + state_value_template,
++          qos, retain, output_type) is declared on the remote device in
++          remote_devices[*].mqtt.outputs and referenced here by
++          device_id + output_id.
+     momentary_turn_on:
+       type:
+         - string

@@ -1,0 +1,28 @@
+diff --git a/boneio/core/config/schema_converter.py b/boneio/core/config/schema_converter.py
+index da3a195..af1e21e 100644
+--- a/boneio/core/config/schema_converter.py
++++ b/boneio/core/config/schema_converter.py
+@@ -262,15 +262,17 @@ def generate_section_schema(section_name: str, section_schema: dict[str, Any]) -
+ def main():
+     """Main function to convert schema."""
+     script_dir = os.path.dirname(os.path.abspath(__file__))
+-    schema_file = os.path.join(script_dir, "..", "..", "schema", "schema.yaml")
+     output_dir = os.path.join(script_dir, "..", "..", "webui", "schema")
+-    
++
+     # Create output directory if it doesn't exist
+     os.makedirs(output_dir, exist_ok=True)
+-    
+-    # Load the schema
+-    with open(schema_file) as f:
+-        schema = yaml.load(f, Loader=BoneIOLoader)
++
++    # Use the canonical schema loader so module-provided extensions
++    # (boneio/modules/*/schema_extension.yaml) are merged in before
++    # generating the JSON schemas served to the frontend.
++    from boneio.core.config.yaml_util import _get_schema, clear_config_cache
++    clear_config_cache()  # force re-read in case caller already loaded
++    schema = _get_schema()
+     
+     # Convert and save the main schema
+     json_schema = convert_cerberus_to_json_schema(schema)

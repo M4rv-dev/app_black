@@ -1,0 +1,21 @@
+diff --git a/frontend/src/components/UISettings/components/TableRenderer.tsx b/frontend/src/components/UISettings/components/TableRenderer.tsx
+index 9ca259c..c3ef7d3 100644
+--- a/frontend/src/components/UISettings/components/TableRenderer.tsx
++++ b/frontend/src/components/UISettings/components/TableRenderer.tsx
+@@ -17,6 +17,7 @@ import TemplateTable from '../tables/TemplateTable';
+ import ADCTable from '../tables/ADCTable';
+ import BoardSensorsTable from '../tables/BoardSensorsTable';
+ import RemoteOutputTable from '../tables/RemoteOutputTable';
++import RemoteSensorTable from '../modules/remote_mqtt/tables/RemoteSensorTable';
+ import GenericTable from '../tables/GenericTable';
+ 
+ interface TableRendererProps {
+@@ -77,6 +78,8 @@ const TableRenderer: React.FC<TableRendererProps> = ({
+       return <BoardSensorsTable {...commonProps} />;
+     case 'remote_outputs':
+       return <RemoteOutputTable {...commonProps} allAreas={allAreas} allRemoteDevices={allRemoteDevices} />;
++    case 'remote_sensors':
++      return <RemoteSensorTable {...commonProps} allAreas={allAreas} allRemoteDevices={allRemoteDevices} />;
+     default:
+       return <GenericTable {...commonProps} />;
+   }

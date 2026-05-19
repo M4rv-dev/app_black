@@ -1,0 +1,52 @@
+diff --git a/frontend/src/components/UISettings/RemoteDeviceForm.tsx b/frontend/src/components/UISettings/RemoteDeviceForm.tsx
+index 11353a9..2b48778 100644
+--- a/frontend/src/components/UISettings/RemoteDeviceForm.tsx
++++ b/frontend/src/components/UISettings/RemoteDeviceForm.tsx
+@@ -4,6 +4,7 @@ import { FaPlus, FaTrash, FaSync } from 'react-icons/fa';
+ import { sanitizeId } from './helpers/idValidation';
+ import { useTranslation } from '@/hooks/useTranslation';
+ import HelpLabel from './components/HelpLabel';
++import { MqttDeviceEntitiesEditor, type MqttDeviceConfig } from './modules/remote_mqtt';
+ import {
+   Select,
+   SelectContent,
+@@ -46,7 +47,7 @@ const RemoteDeviceForm: React.FC<RemoteDeviceFormProps> = ({ data, onChange }) =
+   const { t } = useTranslation();
+   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+   const [isDiscovering, setIsDiscovering] = useState(false);
+-  
++
+   const handleChange = (field: string, value: any) => {
+     onChange({ ...data, [field]: value });
+   };
+@@ -630,7 +631,17 @@ const RemoteDeviceForm: React.FC<RemoteDeviceFormProps> = ({ data, onChange }) =
+       {(data?.protocol === 'mqtt' || !data?.protocol) && (
+         <div className="card bg-base-200 p-4 space-y-4">
+           <h3 className="font-medium text-lg">{t('remote_devices.mqtt_settings')}</h3>
+-          
++
++          {/* Generic-MQTT branch: device declares its own inputs/outputs catalog
++              (analogous to ESPHome _discovered_binary_sensors). For device_type
++              boneio_black, the simple boneIO-style {id,name} tables below apply. */}
++          {data?.device_type === 'generic' ? (
++            <MqttDeviceEntitiesEditor
++              value={(data?.mqtt as MqttDeviceConfig) || {}}
++              onChange={(next) => onChange({ ...data, mqtt: { ...(data?.mqtt || {}), ...next } })}
++            />
++          ) : (
++          <>
+           <div className="alert alert-info">
+             <div className="flex-1">
+               <p className="text-sm">
+@@ -730,8 +741,11 @@ const RemoteDeviceForm: React.FC<RemoteDeviceFormProps> = ({ data, onChange }) =
+               </div>
+             </div>
+           </div>
++          </>
++          )}
+         </div>
+       )}
++
+     </div>
+   );
+ };

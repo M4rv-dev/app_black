@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "baseline_sha": "8f1a21c",
+  "built_at_head": "3bb43c32991cc524b3c54b39f5c63d7697f0be75",
+  "module_dirs": [
+    "boneio/modules/expander",
+    "boneio/modules/remote_mqtt",
+    "frontend/src/components/UISettings/modules/expander",
+    "frontend/src/components/UISettings/modules/remote_mqtt"
+  ],
+  "patches": [
+    {
+      "target": "boneio/core/config/schema_converter.py",
+      "patch": "patches/boneio/core/config/schema_converter.py.patch"
+    },
+    {
+      "target": "boneio/core/config/yaml_util.py",
+      "patch": "patches/boneio/core/config/yaml_util.py.patch"
+    },
+    {
+      "target": "boneio/core/manager/display.py",
+      "patch": "patches/boneio/core/manager/display.py.patch"
+    },
+    {
+      "target": "boneio/core/manager/manager.py",
+      "patch": "patches/boneio/core/manager/manager.py.patch"
+    },
+    {
+      "target": "boneio/core/manager/remote_input_registrar.py",
+      "patch": "patches/boneio/core/manager/remote_input_registrar.py.patch"
+    },
+    {
+      "target": "boneio/core/manager/sensors.py",
+      "patch": "patches/boneio/core/manager/sensors.py.patch"
+    },
+    {
+      "target": "boneio/hardware/display/oled.py",
+      "patch": "patches/boneio/hardware/display/oled.py.patch"
+    },
+    {
+      "target": "boneio/modules/__init__.py",
+      "patch": "patches/boneio/modules/__init__.py.patch"
+    },
+    {
+      "target": "boneio/schema/remote_devices.yaml",
+      "patch": "patches/boneio/schema/remote_devices.yaml.patch"
+    },
+    {
+      "target": "boneio/schema/remote_inputs.yaml",
+      "patch": "patches/boneio/schema/remote_inputs.yaml.patch"
+    },
+    {
+      "target": "boneio/schema/remote_outputs.yaml",
+      "patch": "patches/boneio/schema/remote_outputs.yaml.patch"
+    },
+    {
+      "target": "boneio/webui/app.py",
+      "patch": "patches/boneio/webui/app.py.patch"
+    },
+    {
+      "target": "boneio/webui/routes/config.py",
+      "patch": "patches/boneio/webui/routes/config.py.patch"
+    },
+    {
+      "target": "frontend/package-lock.json",
+      "patch": "patches/frontend/package-lock.json.patch"
+    },
+    {
+      "target": "frontend/src/components/ConfigEditorUI.tsx",
+      "patch": "patches/frontend/src/components/ConfigEditorUI.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/OutputItem.tsx",
+      "patch": "patches/frontend/src/components/OutputItem.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/ArrayTableWidget.tsx",
+      "patch": "patches/frontend/src/components/UISettings/ArrayTableWidget.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/BoneIOForm.tsx",
+      "patch": "patches/frontend/src/components/UISettings/BoneIOForm.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/Mcp23017Form.tsx",
+      "patch": "patches/frontend/src/components/UISettings/Mcp23017Form.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/OutputForm.tsx",
+      "patch": "patches/frontend/src/components/UISettings/OutputForm.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/RemoteDeviceForm.tsx",
+      "patch": "patches/frontend/src/components/UISettings/RemoteDeviceForm.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/RemoteInputForm.tsx",
+      "patch": "patches/frontend/src/components/UISettings/RemoteInputForm.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/RemoteOutputForm.tsx",
+      "patch": "patches/frontend/src/components/UISettings/RemoteOutputForm.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/UISettings.tsx",
+      "patch": "patches/frontend/src/components/UISettings/UISettings.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/components/FormRenderer.tsx",
+      "patch": "patches/frontend/src/components/UISettings/components/FormRenderer.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/components/SectionContent.tsx",
+      "patch": "patches/frontend/src/components/UISettings/components/SectionContent.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/components/TableRenderer.tsx",
+      "patch": "patches/frontend/src/components/UISettings/components/TableRenderer.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/constants/sectionDefinitions.ts",
+      "patch": "patches/frontend/src/components/UISettings/constants/sectionDefinitions.ts.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/helpers/configDataUtils.ts",
+      "patch": "patches/frontend/src/components/UISettings/helpers/configDataUtils.ts.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/helpers/expanderBoards.ts",
+      "patch": "patches/frontend/src/components/UISettings/helpers/expanderBoards.ts.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/helpers/itemValidation.ts",
+      "patch": "patches/frontend/src/components/UISettings/helpers/itemValidation.ts.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/helpers/outputMcpUtils.ts",
+      "patch": "patches/frontend/src/components/UISettings/helpers/outputMcpUtils.ts.patch"
+    },
+    {
+      "target": "frontend/src/components/UISettings/tables/OutputTable.tsx",
+      "patch": "patches/frontend/src/components/UISettings/tables/OutputTable.tsx.patch"
+    },
+    {
+      "target": "frontend/src/components/ui/select.tsx",
+      "patch": "patches/frontend/src/components/ui/select.tsx.patch"
+    },
+    {
+      "target": "frontend/src/index.css",
+      "patch": "patches/frontend/src/index.css.patch"
+    },
+    {
+      "target": "frontend/src/locales/en/common.json",
+      "patch": "patches/frontend/src/locales/en/common.json.patch"
+    },
+    {
+      "target": "frontend/src/locales/pl/common.json",
+      "patch": "patches/frontend/src/locales/pl/common.json.patch"
+    },
+    {
+      "target": "frontend/src/types/config.ts",
+      "patch": "patches/frontend/src/types/config.ts.patch"
+    },
+    {
+      "target": "pyproject.toml",
+      "patch": "patches/pyproject.toml.patch"
+    }
+  ],
+  "excluded": [
+    ".gitignore",
+    "WORK_LOG.md",
+    "boneio/webui/schema/binary_sensor.schema.json",
+    "boneio/webui/schema/config.schema.json",
+    "boneio/webui/schema/cover.schema.json",
+    "boneio/webui/schema/event.schema.json",
+    "boneio/webui/schema/irrigation.schema.json",
+    "boneio/webui/schema/lox_udp.schema.json",
+    "boneio/webui/schema/modbus_devices.schema.json",
+    "boneio/webui/schema/mqtt.schema.json",
+    "boneio/webui/schema/remote_devices.schema.json",
+    "boneio/webui/schema/remote_inputs.schema.json",
+    "boneio/webui/schema/remote_outputs.schema.json",
+    "boneio/webui/schema/remote_sensors.schema.json",
+    "boneio/webui/schema/template.schema.json"
+  ]
+}

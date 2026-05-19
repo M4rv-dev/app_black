@@ -62,13 +62,16 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _make_mqtt_reload_handler(manager_self, section: str):
-    """Build a closure that routes a reload-dispatcher entry to the remote_mqtt
-    module. Lives at module-level so the dispatcher dict in `reload_config`
-    stays one-liner per section."""
+    """Build a closure that asks the ModuleRegistry for a section reload handler.
+
+    Lives at module-level so the dispatcher dict in ``reload_config``
+    stays one-liner per section.
+    """
     async def _handler():
-        from boneio.modules.remote_mqtt import manager_integration as _mod
-        if section == "remote_sensors":
-            await _mod.reload_remote_sensors(manager_self)
+        from boneio.modules._registry import ModuleRegistry
+        handler = ModuleRegistry.get().make_reload_handler(manager_self, section)
+        if handler is not None:
+            await handler()
     return _handler
 
 
@@ -282,10 +285,9 @@ class Manager:
         # Register remote outputs (must be after OutputManager and RemoteDeviceManager,
         # but before IrrigationManager which needs to find remote outputs in OutputManager)
         self.register_remote_outputs()
-        # Boot module-provided integrations (e.g. modules/remote_mqtt registers
-        # generic MQTT sensors, additional reload handlers, etc.)
-        from boneio.modules.remote_mqtt import manager_integration as _remote_mqtt_mod
-        _remote_mqtt_mod.setup(self)
+        # Boot module-provided integrations via registry (auto-discovers all modules).
+        from boneio.modules._registry import ModuleRegistry
+        ModuleRegistry.get().setup(self)
 
         self.templates = TemplateManager(
             manager=self,
@@ -1338,15 +1340,16 @@ class Manager:
         # Clean up old remote inputs and outputs before reload
         self.inputs.unregister_remote_inputs()
         self.unregister_remote_outputs()
-        # Module-owned cleanup (MQTT generic sensors, etc.)
-        from boneio.modules.remote_mqtt import manager_integration as _remote_mqtt_mod
-        _remote_mqtt_mod.teardown_on_devices_reload(self)
+        # Module-owned cleanup via registry.
+        from boneio.modules._registry import ModuleRegistry
+        _registry = ModuleRegistry.get()
+        _registry.teardown_on_devices_reload(self)
         await self.remote_devices.reload(remote_devices_config)
         # Re-register remote inputs and outputs from config
         self.register_remote_inputs()
         self.register_remote_outputs()
-        # Module-owned setup (MQTT generic sensors, etc.)
-        _remote_mqtt_mod.setup_on_devices_reload(self)
+        # Module-owned setup via registry.
+        _registry.setup_on_devices_reload(self)
         # Broadcast all input states so frontend picks up new/removed remote inputs
         self.inputs._broadcast_all_input_states()
         _LOGGER.info("Remote devices configuration reloaded successfully")
@@ -1385,6 +1388,8 @@ class Manager:
         output groups, and frontend display.
         """
         from boneio.components.output.remote import RemoteOutputBase
+        from boneio.modules._registry import ModuleRegistry
+        _registry = ModuleRegistry.get()
 
         config = self._config_helper.get_config()
         remote_outputs_config: list[dict] = config.get("remote_outputs", [])
@@ -1439,11 +1444,9 @@ class Manager:
                 )
                 continue
 
-            # Module-provided protocols handle their own setup. If a module
-            # claims this row (e.g. remote_mqtt for `remote_source == "mqtt"`),
-            # skip the standard device-manager flow below.
-            from boneio.modules.remote_mqtt.manager_integration import try_setup_mqtt_output
-            if try_setup_mqtt_output(self, out_cfg, entity_id):
+            # Module-provided protocols handle their own setup. If any module
+            # claims this row, skip the standard device-manager flow below.
+            if _registry.try_setup_output(self, out_cfg, entity_id):
                 continue
 
             remote_output = RemoteOutputBase(

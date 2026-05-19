@@ -1,0 +1,59 @@
+diff --git a/frontend/src/components/UISettings/RemoteInputForm.tsx b/frontend/src/components/UISettings/RemoteInputForm.tsx
+index aa7038c..fa89736 100644
+--- a/frontend/src/components/UISettings/RemoteInputForm.tsx
++++ b/frontend/src/components/UISettings/RemoteInputForm.tsx
+@@ -302,9 +302,10 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
+               <SelectItem value="_none_">{t('remote_devices.select_device')}</SelectItem>
+               {allRemoteDevices
+                 .filter((device) => {
+-                  // Only show devices that have discoverable binary sensors
+-                  const bs = device.esphome_api?.binary_sensors || device.esphome_api?._discovered_binary_sensors;
+-                  return bs && bs.length > 0;
++                  // Show devices with any input-like entities (ESPHome binary sensors OR MQTT inputs)
++                  const espBs = device.esphome_api?.binary_sensors || device.esphome_api?._discovered_binary_sensors;
++                  const mqttInputs = device.mqtt?.inputs;
++                  return (espBs && espBs.length > 0) || (mqttInputs && mqttInputs.length > 0);
+                 })
+                 .map((device) => {
+                   const protocolLabel =
+@@ -327,7 +328,9 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
+           )}
+         </div>
+ 
+-        {/* Input/Sensor ID (input_id) — dropdown from selected device's binary sensors */}
++        {/* Input/Sensor ID — dropdown of inputs exposed by the selected device.
++            For MQTT devices, inputs come from device.mqtt.inputs (managed in the
++            device form). Pattern matches ESPHome's _discovered_binary_sensors. */}
+         <div className="form-control">
+           <label className="label">
+             <span className="label-text font-medium">{t('inputs.device_input')}</span>
+@@ -335,9 +338,11 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
+           {(() => {
+             const selectedDevice = allRemoteDevices.find(d => d.id === data.device_id);
+             const availableInputs: Array<{ id: string; name?: string }> =
+-              selectedDevice?.esphome_api?.binary_sensors ||
+-              selectedDevice?.esphome_api?._discovered_binary_sensors ||
+-              [];
++              data.remote_source === 'mqtt'
++                ? (selectedDevice?.mqtt?.inputs || [])
++                : (selectedDevice?.esphome_api?.binary_sensors ||
++                   selectedDevice?.esphome_api?._discovered_binary_sensors ||
++                   []);
+             return (
+               <Select
+                 value={data.input_id || '_none_'}
+@@ -367,6 +372,14 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
+               <span className="label-text-alt text-error">{t('validation.required')}</span>
+             </label>
+           )}
++          {data.remote_source === 'mqtt' && data.device_id && (
++            <label className="label">
++              <span className="label-text-alt text-xs text-base-content/60">
++                {t('remote_mqtt.inputs_from_device_hint') ||
++                  'Inputs are managed on the device. Add / edit them in Remote Devices → MQTT settings.'}
++              </span>
++            </label>
++          )}
+         </div>
+ 
+         {/* Area */}
