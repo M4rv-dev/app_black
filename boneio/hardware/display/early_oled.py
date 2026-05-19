@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import textwrap
+import time
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
@@ -72,24 +73,63 @@ def init_early_oled() -> Any | None:
 
     Call this once at the very start of the application.
 
+    Retry strategy: mirrors ``Oled.__init__`` in oled.py — 10 attempts with
+    a linear backoff ramp (0.2s → 2.0s, ~14s total). Without this, a single
+    failed shot on a contended bus (warm restart, config-reload, post-deploy)
+    leaves ``_early_device`` as None; DisplayManager then falls into its own
+    10-retry cold init on the SAME hot bus and also loses, killing the OLED
+    until a clean cold boot. The retry here matches the bus-stabilization
+    window of the other i2c drivers (LM75/INA219/MCP23017/PCT2075) that
+    parallel-probe at process start.
+
+    Logging: success → INFO (visible at the default INFO level so the journal
+    confirms early init worked). Terminal failure → WARNING. Per-attempt
+    transient errors stay at DEBUG so a working bus produces only one line.
+    The previous version logged everything at DEBUG, which made silent
+    failures effectively invisible on a production INFO logger.
+
     Returns:
-        sh1106 device instance or None if OLED hardware is not available.
+        sh1106 device instance or None if OLED hardware is unavailable.
     """
     global _early_device
     if _early_device is not None:
         return _early_device
 
     try:
+        from luma.core.error import DeviceNotFoundError
         from luma.core.interface.serial import i2c
         from luma.oled.device import sh1106
-
-        serial = i2c(port=2, address=0x3C)
-        _early_device = sh1106(serial)
-        _LOGGER.debug("Early OLED device initialized for startup messages")
-        return _early_device
-    except Exception as err:
-        _LOGGER.debug("Early OLED init skipped (no hardware): %s", err)
+    except ImportError as err:
+        # luma/PIL missing entirely — retry won't help.
+        _LOGGER.debug("Early OLED libraries unavailable: %s", err)
         return None
+
+    last_err: Exception | None = None
+    for attempt in range(10):
+        try:
+            serial = i2c(port=2, address=0x3C)
+            _early_device = sh1106(serial)
+            if attempt > 0:
+                _LOGGER.info(
+                    "Early OLED initialized after %d retries", attempt,
+                )
+            else:
+                _LOGGER.info("Early OLED initialized")
+            return _early_device
+        except (DeviceNotFoundError, OSError) as err:
+            last_err = err
+            _LOGGER.debug(
+                "Early OLED attempt %d failed (%s), retrying...",
+                attempt + 1, err,
+            )
+            # Linear ramp 200ms → 2000ms (mirrors oled.py).
+            time.sleep(min(0.2 * (attempt + 1), 2.0))
+
+    _LOGGER.warning(
+        "Early OLED init failed after 10 attempts: %s — DisplayManager "
+        "will try its own cold init.", last_err,
+    )
+    return None
 
 
 def get_early_device() -> Any | None:
