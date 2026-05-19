@@ -197,6 +197,114 @@ zapamiętania dla podobnych "early init → main init" handoff'ów.
 
 ---
 
+### Session 5 (cd.) — OLED partial-flush + modbus uart4 hardware fault
+
+#### Część B — OLED partial-flush hardening (commit `ff26393`)
+
+Po Session 5 część A (OLED initialization restored), użytkownik zgłosił że
+ekran ożył, ale **"czasami ekrany pojawiają się dobrze a czasami są ucięte
+w połowie"**. Klasyczny partial-flush SH1106 — luma pisze framebuffer
+stronami przez i2c, każda strona to osobna transakcja. Gdy któraś przegrywa
+z bus contention, top fragment się pomalował a dolny zostaje stary.
+
+**Smoking gun w journalu** — w 50-sekundowym oknie (~23:35:05–23:35:53):
+- 9× `OLED render_display:<screen> failed after 3 attempt(s): [Errno 121] Remote I/O error`
+- 5× `OLED clear failed ([Errno 121] Remote I/O error) — first paint will overwrite`
+
+Czyli `_safe_draw` regularnie wyczerpywał wszystkie 3 próby (retries=2 + 1
+initial), a `clear_display()` jako one-shot best-effort tracił całe race
+na rzecz innych i2c klientów (PCT2075 long temp reads na 0x48 stallują
+bus przez 10-50ms).
+
+**Fix — trzy zmiany w `boneio/hardware/display/oled.py`**:
+1. `_safe_draw` default `retries=2 → retries=6`, exp backoff cap 640ms.
+   Inter-attempt sleep budget rośnie z ~30ms do ~1.27s — pokrywa typowe
+   stall windows innych i2c sterowników.
+2. `clear_display()` przepisane z one-shot na 4-attempt retry loop, ten
+   sam ramp jak `_safe_draw`. Failed clear był groźniejszą połową bugu
+   (failed render zostawia stary ekran intact — kosmetyczny; failed clear
+   + partial flush = "half-old half-new" frame).
+3. `_next_screen()` reaguje na `render_display() == False` schedulując
+   one-shot recovery paint przez `loop.call_later(0.3, ...)`. 300ms pozwala
+   równoległym i2c klientom zwolnić bus. Callback bail'uje jeśli user
+   zmienił ekran w międzyczasie albo display poszedł do snu.
+
+`render_display()` zwraca teraz `bool` żeby caller mógł podjąć decyzję.
+Pozostali callerzy (`_update_display` z eventów) ignorują return value —
+oni mają naturalny self-heal cycle przez kolejne refresh'e.
+
+**Weryfikacja live**: 5 minut po deploy zero `render_display:* failed
+after` / `clear failed after` w journalu. Patch działa pod istniejącą
+bus contention.
+
+#### Część C — modbus uart4: hardware fault, USB dongle = produkcja
+
+Użytkownik chciał wpiąć sondę BoneIO Edge Temperature/Humidity przez
+wewnętrzny uart4 (P9.13 TX / P9.11 RX → moduł U56 RS485 izolowany →
+screw terminal J14). Sonda działa idealnie przez **USB-RS485 dongle**
+(/dev/ttyUSB0, ten sam slave_id=1, ta sama sonda), ale przez uart4 —
+cisza, brak danych, brak reakcji LED na sondzie.
+
+**Pomiary z zewnętrznego złącza J14 (multimetr, sonda podpięta):**
+- Idle: A=1.64V, B=1.72V vs GND → różnica 80mV (poniżej progu ±200mV
+  RS485), średnia ~VCC/2 (3.3V/2). Klasyczny floating bus bez
+  fail-safe bias resistors.
+- Podczas TX (test z poprzedniej sesji z Windsurfem): **A/B stałe ~1.6V
+  zamiast oscylować**. Brak aktywności driver'a U56 w czasie transmisji.
+
+**Diagnoza** (z zewnątrz, bez otwierania obudowy — BoneIO w produkcji
+z 32 przekaźnikami i 45 wyjściami podpiętymi, nie wolno ruszać):
+*Driver U56 RS485 modułu na uart4 nie nadaje.* Przyczyna może być
+fizyczna (uszkodzony chip, lutowanie pin VDD/GND, spalony fuse F2 6V
+500mA, dead izolacja VCC2) — z zewnątrz nie da się rozróżnić. Każda
+z tych przyczyn daje identyczny objaw: napięcia stałe podczas TX.
+
+**Konfiguracja** (dla pamięci):
+- Faktyczny config: `/home/boneio/boneio/config.yaml`
+  (ExecStart `boneio run -c /home/boneio/boneio/config.yaml`).
+- Inne `cover/config.yaml`, `32x10/config.yaml`, `24x16/config.yaml`,
+  `cover_mix/config.yaml` w `/home/boneio/boneio/` to **przykładowe
+  templaty** layout'ów boardów, nie ładowane.
+- Aktualne modbus settings:
+  ```yaml
+  modbus:
+    uart: /dev/ttyUSB0
+  modbus_devices:
+  - model: boneio-edge-temp
+    address: 1
+  ```
+- Definicja sondy: `boneio/modbus/devices/sensors/boneio-edge-temp.json`
+  — holding registers, Humidity@0, Temperature@1 (S_WORD ×0.1),
+  możliwe baudrate'y 2400/4800/**9600**/19200 (default 9600).
+
+**Decyzja**: USB dongle pozostaje jako produkcyjny modbus interface.
+Naprawa hardware'owa uart4 odłożona na okazję otwarcia BoneIO (np.
+zaplanowany przestój). Wymaga: wymiany modułu U56 lub diagnostyki
+zasilania (pomiar VDD na pinie 1 vs pin 4 GND, sprawdzenia F2 fuse,
+sprawdzenia VCC2 na izolowanej stronie).
+
+**Pending dla przyszłej okazji** (przy otwartej obudowie):
+1. Pomiar VDD na pin 1 U56 vs GND (oczekiwane 3.3V).
+2. Identyfikacja MPN modułu RS485 (footprint `rs485:RS485_moduleTTL`
+   wskazuje że to wymienny moduł, nie chip lutowany — naklejka/nadruk
+   na PCB modułu da odpowiedź czy auto-direction czy DE/RE manual).
+3. Sprawdzenie F2 fuse (6V 500mA na linii +5V — Image #2).
+4. Pomiar na izolowanej stronie: czy VCC2 jest generowane (jeśli moduł
+   ma wbudowany DC-DC).
+5. Po naprawie: zmiana `config.yaml` na `modbus.uart: uart4` + restart
+   + mbpoll test (`sudo apt install mbpoll` na BBB jeśli jeszcze nie
+   ma, komenda: `mbpoll -m rtu -a 1 -b 9600 -P none -s 1 -r 0 -c 2 -t 3 /dev/ttyS4`
+   → powinno zwrócić wartości Humidity i Temperature ×10).
+
+**Memorable**: ten case jest dobrą lekcją żeby **najpierw zapytać czy
+device jest otwarte**. Pierwsze sugerowane testy diagnostyczne (multimetr
+na piny U56, pomiar VDD na chipie) były niewykonalne w obecnym setup'ie
+— BoneIO zamknięte z 77 podłączonymi obwodami. Pomiar z zewnętrznego
+złącza J14 + wniosek z dynamiki sygnału podczas TX wystarczyły do
+diagnozy bez wpinania się w wewnętrzne piny.
+
+---
+
 ### 2026-05-19 — Session 4 (audyt DevOps + UX/UI → program naprawczy)
 
 **Cel**: Całościowy przegląd projektu pod kątem DevOps i UX/UI. Zebranie obserwacji,
