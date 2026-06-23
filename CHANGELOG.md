@@ -4,6 +4,424 @@ All notable changes to boneIO Black are documented in this file.
 
 ---
 
+## v1.5.0dev3 (2026-06-17)
+
+Critical irrigation schedule fix — schedule tasks were permanently killed after the first cycle completed.
+
+### 🐛 Bug Fixes
+
+- **Irrigation schedule dies after first cycle** — `shutdown()` called `stop_schedules()` which cancelled the `asyncio.Task` running `_run_schedule_loop()`. When a scheduled cycle completed normally (`_advance_to_next_zone` → `shutdown`), the schedule task was killed permanently — the next day's schedule would never fire, with zero log output. Split into `shutdown()` (stops active cycle only, safe to call from schedule tasks) and `full_stop()` (stops cycle + cancels schedule tasks, used by IrrigationManager for teardown/reload).
+- **Cover state not retained on MQTT broker restart** — `send_state()` in `BaseCover` published state and position without `retain=True`. After an MQTT broker restart, HA would show covers as "unavailable" until the next state change. Added `retain=True` to both state and position MQTT publishes.
+
+### ✨ Improvements
+
+- **Resend all entity states on MQTT reconnect** — New `_resend_all_states()` method in Manager publishes current state of all outputs and covers after MQTT reconnect, ensuring HA always has correct state after a broker restart.
+
+### 🧪 Tests
+
+- 4 new regression tests in `TestScheduleSurvival` — verify `shutdown()` preserves schedule tasks, `full_stop()` cancels them, cycle completion preserves schedule, and `start_full_cycle()` while running preserves schedule.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.5.0dev2...v1.5.0dev3
+
+---
+
+## v1.5.0dev2 (2026-06-13)
+
+Critical irrigation fix — schedule tasks were never started after v1.5.0dev1.
+
+### 🐛 Bug Fixes
+
+- **Irrigation schedules not starting** — Commit `c8a0841` ("fix irrigation scheduler") split `IrrigationManager.start()` into `start()` (with schedule tasks) and `reconnect()` (without schedule tasks) to prevent resetting timers on MQTT reconnect. However, `reconnect_callback()` — the only entry point for both first connection and reconnections — was changed to call `reconnect()` instead of `start()`. This meant `start_schedules()` was **never called**, silently disabling all irrigation schedules. Fixed by detecting first connection (no running schedule tasks) in `reconnect()` and starting schedules automatically.
+- **PWA build failure** — Monaco editor TS worker grew to 6.9 MB after dependency updates, exceeding the 5 MB workbox precache limit. Excluded worker chunks from precache (they're loaded on-demand) and added runtime `CacheFirst` strategy for workers instead.
+
+### 📦 Other Changes
+
+- **Frontend dependency updates** — Bumped React 19.2.7, Vite 8.0.16, Tailwind 4.3.0, DaisyUI 5.5.23, ESLint 10.x, and other dependencies.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.5.0dev1...v1.5.0dev2
+
+---
+
+## v1.5.0dev1 (2026-06-08)
+
+HA Dashboard export wizard, LoxUDP improvements, disk sensor discovery, WLED remote outputs, and various fixes.
+
+### ✨ New Features
+
+- **HA Dashboard Export Wizard** — New multi-step wizard in the Tools tab for generating Home Assistant Lovelace dashboard YAML sections. Supports outputs (lights, switches, valves), covers, output groups, irrigation, alarm panels, gate covers, and Modbus devices. Per-entity selection with localStorage persistence, per-area YAML copy buttons, and entity count statistics per area.
+- **WLED Remote Output support** — Added support for WLED devices as remote outputs with brightness control.
+- **All disk sensors** — Disk sensor discovery now finds all mounted partitions, not just the root filesystem.
+- **OLED FIFO permissions migration** — New migration `v1_5_0_fix_oled_fifo_permissions` ensures correct permissions on OLED message FIFO.
+
+### 🐛 Bug Fixes
+
+- **Irrigation scheduler** — Fixed scheduler timing issues causing missed or delayed zone activations.
+- **LoxUDP protocol** — Improved reliability of Lox UDP communication with better keepalive handling, reconnection logic, and binary value encoding.
+- **Docker ghost dirs in boneio-migrate** — `install_file` now tolerates Docker overlay filesystem ghost directories during migration.
+- **HA entity slugify** — `_ha_slugify()` now collapses multiple consecutive underscores into a single one, matching Home Assistant behavior for entities with stripped non-ASCII characters.
+
+### ♻️ Refactoring
+
+- **TemplateManager property rename** — Renamed sub-manager accessors from `alarms`/`gates`/`thermostats` to `alarm_manager`/`gate_manager`/`thermostat_manager` to clarify they return manager objects, not entity lists.
+- **Dashboard card builders** — Extended `dashboard_cards.py` with generators for alarm, gate, cover, and Modbus tile cards.
+- **LogViewer improvements** — Enhanced log viewer UI with better filtering and display.
+- **Output table HA entity preview** — Output table now shows HA entity ID preview for each output.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.4dev1...v1.5.0dev1
+
+---
+
+
+## v1.4.3 (2026-06-04)
+
+Migration helper fixes and OLED shutdown UX improvements.
+
+### 🐛 Bug Fixes
+
+- **boneio-migrate helper** — `systemctl reload/restart` actions now tolerate inactive services instead of failing the entire migration. Fixes image build failures when mosquitto was stopped during `setup_boneio.sh`.
+
+### ✨ New Features
+
+- **OLED late-shutdown service** — New `boneio-oled-shutdown.service` displays "System stopped. Safe to unplug." on the OLED **after** the network is down during shutdown.
+- **Restart-aware ExecStopPost** — `boneio.service` only shows "Shutting down..." during actual system shutdown, not during `systemctl restart boneio`.
+
+### 📦 Migration: v1.4.3
+
+- Installs `boneio-oled-shutdown.service` (late-phase shutdown OLED message)
+- Updates `boneio.service` with shutdown-aware `ExecStopPost`
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.2...v1.4.3
+
+---
+
+## v1.4.2 (2026-06-03)
+
+Hotfix — TimePeriod object handling in input forms.
+
+### 🐛 Bug Fixes
+
+- **EventForm crash** — `parseMs()` called `.match()` on TimePeriod objects (`{milliseconds: 220}`) instead of strings, causing `Uncaught TypeError: val.match is not a function`. Replaced with the existing `convertTimeperiodToMilliseconds()` utility.
+- **BinarySensorForm wrong bounce_time** — `typeof data.bounce_time === 'number'` always returned `false` for TimePeriod objects, displaying default `120ms` instead of the configured value. Fixed using `convertTimeperiodToMilliseconds()`.
+
+### 🛡️ Improvements
+
+- **Pre-commit hook** — Added `tsc --noEmit` TypeScript type-check before vitest to catch build-breaking issues (unused variables, type errors) before commit.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.1...v1.4.2
+
+---
+
+## v1.4.1 (2026-06-03)
+
+Hotfix release with SSL certificate renewal and Modbus chart improvements.
+
+### 🐛 Bug Fixes
+
+- **SSL certificate renewal** — `_cert_needs_refresh()` was checking file modification time (`st_mtime`) instead of the actual X.509 expiry date. If the cert file was touched by backup/copy/rsync, `mtime` would reset and the certificate would never be renewed even after expiry. Now parses the real `Not After` date using `openssl x509` and refreshes when the cert expires within 14 days.
+- **Modbus sparkline charts for energy meters** — `shouldRenderHistory()` only whitelisted temperature/humidity sensors (by name pattern or unit `%`, `°C`, `rh%`). Energy meters with units like `W`, `kWh`, `V`, `A`, `Hz`, `VA`, `var` were excluded. Changed to show charts for all numeric read-only sensors that have a unit of measurement.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0...v1.4.1
+
+---
+
+## v1.4.0 (2026-06-03)
+
+Major release — remote device support, irrigation overhaul, AI-assisted configuration, system monitoring, and dozens of bug fixes.
+
+---
+
+### 🔌 Remote Devices
+
+- **Remote Outputs (`remote_outputs`)** — register switches and lights from remote ESPHome/MQTT devices as first-class outputs with ON/OFF/TOGGLE, area assignment, and interlock groups.
+- **Brightness control** — remote ESPHome lights get a real-time brightness slider with smooth animations and debounced API calls.
+- **Remote Binary Sensors** — subscribe to binary sensors on ESPHome devices for use as action triggers.
+- **WLED brightness support** — WLED devices support brightness via the remote device API.
+- **Remote cover tilt** — tilt actions for venetian blinds on remote boneIO devices.
+
+---
+
+### 🌿 Irrigation
+
+- **Multi-zone irrigation controller** — schedules, per-zone intervals (`run_every_n`), water source management, master valve/pump support, and a full dashboard UI with real-time zone countdown.
+- **Sequential water source activation** — water sources with multiple outputs activate in order with configurable delays (`output_start_delay`, `output_stop_delay`). Deactivation in reverse order.
+- **Interlock-aware activation** — if an output is blocked by an interlock during water source activation, already-activated outputs are rolled back and a fault notification is sent.
+- **Zone enabled toggle** — each zone can be individually enabled/disabled. Reflected in HA dashboard.
+- **Zone `run_every_n` skip counter** — zones with `run_every_n > 1` correctly track their skip counters across multi-cycle runs. `next_run_iso`, `next_run_pretty`, `skip_count` published as valve entity attributes in HA.
+- **Next Run Time sensor** — `device_class=timestamp` sensor showing when the next scheduled run will occur (e.g. "in 19 hours").
+- **HA Dashboard YAML generator** — one-click export of a complete Lovelace dashboard per controller, with zones, durations, schedules, and controls.
+- **Irrigation AI assistant** — AI-powered configuration wizard for creating irrigation setups from natural language descriptions.
+- **Schedule timezone fix** — schedule times are now treated as local time instead of UTC.
+- **Dynamic duration max** — zone duration max is based on configured duration + 20 min (clamped to [30, 120]) instead of hardcoded 1440 min.
+- **Single-zone optimization** — controllers with 1 zone skip unnecessary `auto_advance`, `reverse`, and `next_valve` entities.
+- **Manual start responsiveness** — clicking "Start" responds instantly; pump/valve delays no longer block the UI.
+
+---
+
+### 📊 System Monitoring
+
+- **System sensors (CPU, Disk, Memory)** — percentage-based sensors with rich attributes:
+  - Disk: `disk_total_gib`, `disk_used_gib`, `disk_free_gib`
+  - Memory: `memory_total_gib`, `memory_used_gib`, `memory_available_gib`
+- **Instant sensor values on UI load** — system sensors are included in WebSocket initial states, eliminating the 10-60s blank period after opening the UI.
+- **Sensor attributes in UI** — GraphCard displays compact attribute chips (e.g. `Total: 28.65 GiB | Used: 2.28 GiB | Free: 25.19 GiB`) with dynamic unit extraction.
+- **HA `json_attributes_topic`** — system sensors publish attributes as JSON, visible in HA's "More Info" dialog without extra entities.
+
+---
+
+### 🏠 Home Assistant Integration
+
+- **`suggested_area` in HA discovery** — irrigation and other entities auto-assign to the correct area.
+- **`json_attributes_topic`** — system sensors expose detailed metrics as HA entity attributes.
+- **Entity category reorganization** — entities placed in proper HA categories (diagnostic, config).
+- **Republish states on MQTT reconnect** — ensures HA always has the latest state.
+- **Output groups in HA** — groups exposed with member outputs visible.
+- **Remote output interlock** — interlock checks enforced for remote outputs and dimmer brightness.
+
+---
+
+### 🖥️ OLED Display
+
+- **Screensaver timer reset** — screensaver countdown now resets from the last button press instead of the first.
+- **Sleep behavior fix** — fixed single-click sleep toggle.
+
+---
+
+### 🎛️ Covers
+
+- **Venetian tilt restore** — new `tilt_restore_after_close` option automatically restores the previous tilt angle after moving to an intermediate position. Skipped at extremes (0% / 100%).
+- **Cover relay dropdown fix** — filter now accepts outputs with `output_type` of `cover`, `none`, or missing.
+- **Cover position precision** — fixed float/int rounding drift during movement.
+
+---
+
+### 🤖 AI Configuration Assistant
+
+- **Output type awareness** — AI correctly distinguishes between lights (brightness actions) and switches (toggle/on/off).
+- **Remote device guidance** — AI knows about remote outputs, covers, and binary sensors.
+- **Irrigation valve type filter** — AI explicitly avoids "light" type outputs for irrigation.
+
+---
+
+### 🧩 UI / UX Improvements
+
+- **Input type change without restart** — switching between "Event Entity" and "Binary Sensor" takes effect immediately.
+- **InputsView navigation fix** — long press on an input correctly navigates to its settings (not areas).
+- **Clipboard in HA addon iframe** — fixed `navigator.clipboard.writeText()` in HA ingress iframe with `document.execCommand('copy')` fallback.
+- **Sidebar section grouping** — remote and restart-required sections visually grouped.
+- **Template duplication** — deep-clone templates with adjusted IDs.
+- **Irrigation zones — collapsible accordion** with reorder buttons and add-at-bottom.
+- **Live graphs** — sparkline charts in sensor/modbus views.
+- **Modbus device temporary disable** — turn off a single Modbus device without removing config.
+
+---
+
+### 🐛 Bug Fixes
+
+- **Irrigation `run_every_n` skip counter desync** — `_eligible_zones()` side effects caused counters to diverge. Split into pure filter + single-call counter update.
+- **Config cache staleness** — `invalidate_config_cache()` now clears `ConfigHelper._config_cache`.
+- **TimePeriod empty string crash** — frontend-sent `""` for optional TimePeriod fields no longer crashes Cerberus.
+- **Remote output MQTT state** — remote outputs now publish state to MQTT (previously HA showed "unavailable").
+- **Interlock bypass on dimmer brightness** — brightness changes now check interlock before allowing > 0.
+- **ESPHome entity type routing** — `control_output()` auto-detects entity type instead of always delegating to `control_switch()`.
+- **ESPHome connect-before-lookup** — entity commands no longer silently fail when entities haven't been populated.
+- **Output group form ID** — form now uses correct `boneio_output` reference.
+- **Interlock Groups API** — fixed always-returning-empty due to wrong attribute reference; added config-based fallback.
+- **Frontend brightness deduplication** — WebSocket now considers `brightness` field in deduplication.
+- **Frontend slider jump-back** — eliminated stale ESPHome callback processing.
+
+---
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.3.1...v1.4.0
+
+---
+
+## v1.4.0dev14 (2026-06-02)
+
+### 🐛 Bug Fixes
+
+- **Clipboard not working in HA addon iframe** — `navigator.clipboard.writeText()` silently failed inside HA ingress iframe due to missing `allow="clipboard-write"` Permissions Policy. Added `iframe.allow = 'clipboard-read; clipboard-write'` to the addon dashboard iframe and created a reusable `copyToClipboard()` utility with `document.execCommand('copy')` fallback for HTTP contexts. Replaced all 10 occurrences across the frontend.
+- **Irrigation manual start delay** — Clicking "Start" on a zone took 2-4 seconds to respond in the UI due to `valve_open_delay` and pump delays blocking the MQTT state publish. Added early `publish_all_states()` immediately after setting `RUNNING` state, before any hardware sleep delays.
+- **Irrigation API response delay** — HTTP API endpoints for start/resume/next_valve blocked until all pump/valve delays completed. Changed to `asyncio.create_task()` fire-and-forget dispatch so the UI receives an instant response.
+- **InputsView long press navigation** — Long press on an input item navigated to the wrong settings section (e.g. `/settings/event` instead of `/settings/local_inputs`).
+- **Output group form ID** — Output group form used effective ID instead of `boneio_output`, causing mismatched entity references.
+
+### ♻️ Refactoring
+
+- **OLED screensaver timer** — Screensaver countdown now resets from the last button press instead of the first, improving UX.
+- **Input type change** — Changing input type between "Event Entity" and "Binary Sensor" now takes effect immediately without requiring app restart.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev13...v1.4.0dev14
+
+---
+
+## v1.4.0dev13 (2026-05-28)
+
+### 🐛 Bug Fixes
+
+- **Critical: run_every_n skip counter desynchronization** — `_eligible_zones()` had side effects (incrementing skip counters) and was called multiple times per cycle (once at start + once per zone advance + once per repeat). This caused skip_count values to diverge across zones even when all had the same `run_every_n`. Fixed by splitting into pure `_eligible_zones()` (no side effects) and `_apply_skip_counters()` (called exactly once per scheduled cycle).
+
+### ✨ New Features
+
+- **Zone next_run as valve attributes** — Zones with `run_every_n > 1` now publish `next_run_iso`, `next_run_pretty`, `skip_count`, and `run_every_n` as JSON attributes on the valve entity. Visible in HA's "more info" dialog without extra sensor entities.
+- **Zone enabled toggle in HA dashboard export** — Each zone valve tile now includes an inline "Enabled" switch in the exported HA dashboard YAML.
+- **EHT Top Ventil config fix** — Modbus input configuration fix for EHT Top Ventil Plus (community contribution).
+
+### 🧪 Tests
+
+- 4 new regression tests for multi-cycle skip counter synchronization (9 zones × 8 cycles, mixed `run_every_n`, purity check).
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev12...v1.4.0dev13
+
+---
+
+## v1.4.0dev12 (2026-05-24)
+
+### 🐛 Bug Fixes
+
+- **Irrigation schedule timezone** — `_next_fire_time()` was treating user-configured schedule times (e.g. "18:00") as UTC instead of local time, causing schedules to fire 2h late in CEST and HA sensor to show wrong time. Now builds candidate in system local timezone and converts to UTC.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev11...v1.4.0dev12
+
+---
+
+## v1.4.0dev11 (2026-05-24)
+
+### 🐛 Bug Fixes
+
+- **Remote output MQTT state** — Remote outputs now publish their state to MQTT (`boneio/{serial}/output/{id}`). Previously HA showed them as "unavailable" because `_emit_state_event()` only emitted EventBus events for WebSocket, never MQTT.
+- **Interlock bypass on dimmer brightness** — `async_set_brightness()` (remote) and `SET_BRIGHTNESS` MQTT handler (local) now check interlock before allowing brightness > 0. A dimmer slider could previously bypass an active interlock group.
+- **TimePeriod empty string crash** — `strip_default_values()` / `clean_dict()` now skips empty strings and `None` values. Frontend could send `""` for optional TimePeriod fields (e.g. `output_start_delay`), causing Cerberus coercion error: `Unknown value ''`.
+- **Config cache staleness** — `invalidate_config_cache()` now also clears `ConfigHelper._config_cache`, fixing stale schedule data after save.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev10...v1.4.0dev11
+
+---
+
+## v1.4.0dev10 (2026-05-24)
+
+### ✨ New Features
+
+- **Single-zone controller optimization** — Controllers with only 1 zone no longer create `auto_advance`, `reverse`, and `next_valve` entities (HA discovery, MQTT subscriptions, dashboard YAML). These are only meaningful for multi-zone controllers.
+
+### 🐛 Bug Fixes
+
+- **slider_tile inline layout** — Zone duration tiles now use `vertical: false`, `features_position: inline`, `style: slider` instead of `buttons`.
+- **Valve tiles without horizontal-stack** — Each valve tile is a separate card (easier to edit manually in HA YAML editor).
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev9...v1.4.0dev10
+
+---
+
+## v1.4.0dev9 (2026-05-24)
+
+### ✨ New Features
+
+- **HA Dashboard — inline tile cards** — All settings, schedule skips, and controls now use compact `inline_tile` cards with `features_position: inline` and entity's HA friendly name (`name: {type: entity}`).
+- **New reusable `inline_tile()`** — Generic dashboard card builder for compact inline tiles. Reusable for future dashboards (covers, gates, etc.).
+- **Water source — tile card with select-options** — Water source select uses tile card with `features: [select-options]` and `features_position: inline`.
+- **Sterowanie — horizontal tile cards** — Pause/Resume/Next valve rendered as tile cards in horizontal-stack instead of entities card.
+- **Czasy podlewania — slider tile cards** — Zone duration tiles with `numeric-input` buttons, stacked vertically under a heading.
+- **Podlewanie ręczne — valve tiles** — Zone valve tiles in rows of 2 for manual control.
+- **Schedule skips folded into Ustawienia** — No separate "Harmonogramy" section; schedule skip switches appear as inline tiles in Ustawienia.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev8...v1.4.0dev9
+
+---
+
+## v1.4.0dev8 (2026-05-24)
+
+### ✨ New Features
+
+- **HA Dashboard — reorganized layout** — Dashboard is now organized into clear sections: "Podlewanie ręczne" (valve tiles in rows of 2), "Czasy podlewania" (zone durations as compact inline entities card), "Ustawienia", "Sterowanie", "Harmonogramy", "Sensory", "Zdarzenia".
+- **Dynamic duration max** — Zone duration number entity max is now based on configured duration + 20 min (clamped to [30, 120]) instead of hardcoded 1440 min. Prevents accidental 24-hour irrigation.
+- **Modbus device: EHT-TOPVENTIL-PLUS** — Added `eht-topventil-plus` to the allowed modbus devices list in schema.
+
+### 🐛 Bug Fixes
+
+- **Compact action buttons** — Replaced bulky `button` cards (Pause/Resume/Next) with compact `entities` card rendering them as single-line rows.
+- **Duration input style** — Changed numeric-input from full-width `slider` to compact `+/-` `buttons` mode.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev7...v1.4.0dev8
+
+---
+
+## v1.4.0dev7 (2026-05-24)
+
+### ✨ New Features
+
+- **Next Run Time sensor** — New `device_class=timestamp` sensor for irrigation controllers that shows when the next scheduled run will occur (e.g. "in 19 hours"). Uses `mdi:calendar-clock` icon. Updates on schedule/skip/standby changes.
+- **HA Dashboard YAML generator** — New `/api/irrigation/dashboard?ctrl_id=` endpoint generates complete HA Lovelace dashboard YAML for irrigation controllers. Includes: heading with badges, settings entities, action buttons, sensor tiles (zone end time, next run), zone tiles with duration sliders, schedule skip switches, and event entity.
+- **Dashboard export button** — Per-row `FaFileExport` button in TemplateTable for irrigation items. Copies the generated HA dashboard YAML to clipboard for the specific controller.
+- **Suggested area in HA discovery** — Irrigation controllers now include `suggested_area` in their HA MQTT discovery device metadata, allowing Home Assistant to auto-assign entities to the correct area.
+
+### ♻️ Refactoring
+
+- **Reusable dashboard card builders** — Extracted generic HA card primitives (`heading_card`, `tile_card`, `entities_card`, `button_card`, `entity_badge`, `horizontal_stack`, `sensor_tile`, `slider_tile`, `cards_to_yaml`) into `boneio/webui/dashboard_cards.py`. Reusable for future cover/light/alarm dashboard generators.
+- **`build_entity_id` with configurable prefix** — Entity ID builder now accepts a domain prefix parameter (`irrigation`, `cover`, etc.) instead of hardcoded `irrigation`.
+- **`ha_irrigation_timestamp_sensor_message` icon param** — Added optional `icon` parameter with `mdi:timer-sand` default, allowing custom icons per sensor type.
+- **TableActions / MobileCard** — Extended with optional `onDashboard` callback; renders `FaFileExport` icon between Duplicate and Delete buttons.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev6...v1.4.0dev7
+
+---
+
+## v1.4.0dev6 (2026-05-24)
+
+### ✨ New Features
+
+- **Irrigation zones — collapsible accordion** — Zones are now displayed as collapsible accordions with a compact summary (name, valve, duration, frequency, enabled status). New zones auto-expand for editing; existing zones are collapsed by default for better overview.
+- **Irrigation zones — reorder** — Added ▲/▼ buttons to move zones up/down in the list. Zone order determines irrigation sequence.
+- **Irrigation zones — add button at bottom** — "Add zone" button is now shown both at the top and bottom of the zone list to avoid scrolling.
+- **Template duplication** — New 📋 (copy) button in template table. Deep-clones the template with `_copy` suffix on IDs and `(copy)` suffix on names. Opens as a new item for editing. Irrigation zone IDs are also adjusted to avoid conflicts.
+- **Platform icons** — Added dedicated emoji icons for irrigation (💧) and gate/cover (🚪) templates in the table view.
+
+### 🐛 Bug Fixes
+
+- **Irrigation AI prompt — light output filter** — AI prompt now explicitly forbids using "light" type outputs for irrigation valves and pumps.
+- **AI context — output type awareness** — Added `output_type` ("light"/"switch") to each output in AI context. Prompt now guides AI to use appropriate action types per output type.
+- **AI context — remote devices guidance** — Added instructions for `remote_output` and `remote_cover` actions with `remote_device`, `output_id`, and `cover_id` fields.
+- **AI context — remote binary sensors** — Added `binary_sensors` from ESPHome devices to remote device context.
+- **httpx test dependency** — Added `httpx>=0.28.0` to test dependencies (required by FastAPI's `TestClient`).
+
+### ♻️ Refactoring
+
+- **TableActions** — Extended with optional `onDuplicate` prop; renders copy icon between Edit and Delete.
+- **MobileCard** — Added `onDuplicate` support for mobile template view.
+- **TableRenderer** — Passes `onDuplicate` through to TemplateTable.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev5...v1.4.0dev6
+
+---
+
+## v1.4.0dev5 (2026-05-23)
+
+### ✨ New Features
+
+- **Reusable AI Assistant Shell** — Extracted `AiAssistantShell.tsx` component shared across all AI-assisted forms (EventForm, BinarySensorForm, RemoteInputForm, IrrigationForm). Single source of truth for the collapsible accordion UI, copy/paste buttons, paste dialog, and status alerts.
+- **AI prompt — output type awareness** — The AI context now includes `output_type` ("light" or "switch") for each output. Prompts guide AI to use appropriate action types (e.g., BRIGHTNESS_UP for lights, TOGGLE/ON/OFF for switches).
+- **AI prompt — remote devices guidance** — Added instructions for using `remote_output` and `remote_cover` action types with proper `remote_device`, `output_id`, and `cover_id` fields.
+- **AI prompt — remote binary sensors** — Added `binary_sensors` to remote device context so AI can see available remote inputs from ESPHome devices.
+- **Irrigation AI — switch-only rule** — Irrigation prompt now explicitly forbids using "light" type outputs for valves and pumps.
+
+### 🐛 Bug Fixes
+
+- **AI Config — missing remote inputs** — `buildAiConfigContext` now includes `binary_sensors` for each remote device (merged from `binary_sensors` + `_discovered_binary_sensors`), fixing empty remote input list in AI prompt.
+- **httpx test dependency** — Added `httpx>=0.28.0` to `[tool.pdm.dev-dependencies] test` — required by FastAPI's `TestClient` which is used in `test_irrigation_ai.py`.
+- **LoxUDP protocol fixes** — Fixed LoxUDP protocol communication issues.
+- **Remote output interlock** — Fixed remote output interlock behavior.
+- **Remote cover tilt action** — Fixed missing tilt action for remote covers.
+
+### ♻️ Refactoring
+
+- **AiConfigAssistant simplified** — Reduced from 239 to 146 lines by delegating UI to `AiAssistantShell`.
+- **IrrigationForm AI cleanup** — Removed ~100 lines of duplicated AI UI code, replaced with `AiAssistantShell` component.
+- **Nested accordion removed** — The "Szczegóły" (Details) inner accordion was removed from AI assistant since the whole block is already collapsible.
+- **AI state management unified** — `IrrigationForm` now uses `aiStatus` object pattern (matching `AiConfigAssistant`) instead of separate `aiError`/`aiSuccess` states.
+
+**Full Changelog**: https://github.com/boneIO-eu/app_black/compare/v1.4.0dev4...v1.4.0dev5
+
+---
+
 ## v1.4.0dev4 (2026-05-17)
 
 ### 🐛 Bug Fixes

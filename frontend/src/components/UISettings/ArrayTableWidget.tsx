@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from '@/api/axios';
+import { copyToClipboard } from '@/utils/clipboard';
 import { FaPlus, FaDownload, FaUpload } from 'react-icons/fa';
 import { useTranslation } from '../../hooks/useTranslation';
 import {
@@ -21,6 +22,7 @@ import TableRenderer from './components/TableRenderer';
 import DeleteConfirmDialog from './components/DeleteConfirmDialog';
 import ImportDialog from './components/ImportDialog';
 import TemplatePicker from './components/TemplatePicker';
+import { AddModbusDeviceWizard } from './AddModbusDeviceWizard';
 import type { AffectedAction } from './hooks/useItemActions';
 
 interface Area {
@@ -96,6 +98,7 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const editItemProcessedRef = useRef<string | null>(null);
   const [wizardCopied, setWizardCopied] = useState(false);
+  const [isModbusWizardOpen, setIsModbusWizardOpen] = useState(false);
   // outputKind is derived from editingItem via useOutputKind — no manual state to keep in sync.
 
   // Extracted hooks
@@ -216,10 +219,36 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
     setIsModalOpen(true);
   };
 
+  /**
+   * Duplicate an item: deep-copy it, adjust id/name to avoid conflicts,
+   * then open it as a new item for editing.
+   */
+  const handleDuplicate = (index: number) => {
+    const item = JSON.parse(JSON.stringify(value[index]));
+    if (item.id) item.id = `${item.id}_copy`;
+    if (item.name) item.name = `${item.name} (copy)`;
+    if (item.zones && Array.isArray(item.zones)) {
+      item.zones = item.zones.map((z: any) => ({
+        ...z,
+        id: z.id ? `${z.id}_copy` : undefined,
+      }));
+    }
+    setEditingItem(item);
+    setEditingIndex(null);
+    originalItemRef.current = null;
+    setHasValidationErrors(false);
+    setAttemptedSubmit(false);
+    setIsModalOpen(true);
+  };
+
   const outputKind = useOutputKind(editingItem);
 
   const handleAdd = () => {
     setEditingIndex(null);
+    if (sectionType === 'modbus_devices') {
+      setIsModbusWizardOpen(true);
+      return;
+    }
     if (sectionType === 'remote_devices') {
       setEditingItem({ protocol: 'mqtt', device_type: 'boneio_black' });
     } else if (sectionType === 'template') {
@@ -414,10 +443,10 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
         ['mqtt', 'output', 'cover', 'output_over_mqtt', 'cover_over_mqtt', 'remote_output', 'remote_cover'];
       const actionOutputOptions = getEnum('items.properties.actions.properties.single.items.properties.action_output.enum') ||
         getEnum('items.properties.actions.properties.pressed.items.properties.action_output.enum') ||
-        ['TOGGLE', 'ON', 'OFF'];
+        ['TOGGLE', 'ON', 'OFF', 'BRIGHTNESS_UP', 'BRIGHTNESS_DOWN', 'BRIGHTNESS_UP_CYCLE', 'BRIGHTNESS_DOWN_CYCLE', 'SET_BRIGHTNESS', 'CYCLE_COLOR', 'CYCLE_PRESET'];
       const actionCoverOptions = getEnum('items.properties.actions.properties.single.items.properties.action_cover.enum') ||
         getEnum('items.properties.actions.properties.pressed.items.properties.action_cover.enum') ||
-        ['TOGGLE', 'OPEN', 'CLOSE', 'STOP', 'TOGGLE_OPEN', 'TOGGLE_CLOSE', 'TILT', 'TILT_OPEN', 'TILT_CLOSE'];
+        ['TOGGLE', 'OPEN', 'CLOSE', 'STOP', 'TOGGLE_OPEN', 'TOGGLE_CLOSE', 'SMART_TOGGLE', 'TILT', 'TILT_OPEN', 'TILT_CLOSE'];
 
       const prompt = buildAiWizardPrompt({
         entityType: entityType as any, data: {} as any, schema,
@@ -425,7 +454,7 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
         allConfiguredInputs: value,
         actionTypeOptions, actionOutputOptions, actionCoverOptions,
       });
-      await navigator.clipboard.writeText(prompt);
+      await copyToClipboard(prompt);
       setWizardCopied(true);
       setTimeout(() => setWizardCopied(false), 3000);
     } catch (err) {
@@ -493,6 +522,7 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
           allRemoteDevices={allRemoteDevices}
           onEdit={handleEdit}
           onDelete={handleDelete}
+          onDuplicate={sectionType === 'template' ? handleDuplicate : undefined}
           onAddFromDiscovery={handleAddFromDiscovery}
         />
       ) : (
@@ -605,6 +635,20 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
         onConfirm={confirmImport}
         onCancel={cancelImport}
       />
+
+      {/* Modbus Device Wizard */}
+      {sectionType === 'modbus_devices' && (
+        <AddModbusDeviceWizard
+          open={isModbusWizardOpen}
+          onOpenChange={setIsModbusWizardOpen}
+          allAreas={allAreas}
+          allModbusDevices={value}
+          onAdd={(deviceConfig) => {
+            const newValue = [...value, deviceConfig];
+            onChange(newValue);
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -6,7 +6,6 @@ export interface ModbusHistoryPoint {
   value: number;
 }
 
-const TEMPERATURE_HUMIDITY_PATTERN = /temperature|temp|humidity|humid|wilgoc|wilgotnosc/i;
 const MODBUS_HISTORY_STORAGE_KEY = 'modbusHistory';
 
 function roundHistoryValue(value: number): number {
@@ -21,28 +20,23 @@ function isNumericState(value: ModbusDeviceState['state']): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function isTemperatureOrHumidityDevice(device: ModbusDeviceState): boolean {
-  const hasUnit = typeof device.unit === 'string' && device.unit.trim().length > 0;
-  const combinedLabel = `${device.custom_label || ''} ${device.name || ''} ${device.id || ''}`.toLowerCase();
-  const unit = (device.unit || '').toLowerCase().replace(/\s+/g, '');
-
-  if (!hasUnit) {
-    return false;
-  }
-
+/**
+ * Check if a device should have history tracked and rendered as a sparkline.
+ *
+ * Shows charts for all numeric, read-only sensors that have a unit of measurement.
+ * Writeable entities (select, switch, number) are excluded.
+ */
+export function shouldRenderHistory(device: ModbusDeviceState): boolean {
   if (isWriteableEntityType(device.entity_type)) {
     return false;
   }
 
-  if (TEMPERATURE_HUMIDITY_PATTERN.test(combinedLabel)) {
-    return true;
+  const hasUnit = typeof device.unit === 'string' && device.unit.trim().length > 0;
+  if (!hasUnit) {
+    return false;
   }
 
-  return unit === '%' || unit === 'rh%' || unit === 'c' || unit === '°c' || unit === 'degc';
-}
-
-export function shouldRenderHistory(device: ModbusDeviceState): boolean {
-  return isTemperatureOrHumidityDevice(device) && isNumericState(device.state);
+  return isNumericState(device.state);
 }
 
 function canUseStorage(): boolean {

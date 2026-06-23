@@ -474,32 +474,7 @@ modbus_devices:
         coerce:
           - str
           - lower
-        allowed:
-          [
-            'cwt',
-            'dts1964_3f',
-            'dyp-a12-ultrasonic',
-            'gdfs',
-            'gdfx',
-            'boneio-edge-temp',
-            'liquid-sensor',
-            'orno-or-we-517',
-            'pt100',
-            'fujitsu-ac',
-            'le-03mw',
-            'le-03mwct',
-            'n4dsc08',
-            'r4dcb08',
-            'sdm120',
-            'sdm630',
-            'sht20',
-            'sht30',
-            'socomec_e03',
-            'socomec_e23',
-            'sofar',
-            'ventclear',
-            'esp32_relay_x4_modbus'
-          ]
+        # allowed list is dynamically injected at runtime from modbus/devices/ files
         meta:
           label: Model to load from database.
       update_interval:
@@ -1898,6 +1873,16 @@ template:
         default: False
         meta:
           label: Run zones in reverse order (irrigation only).
+      pause_timeout:
+        type:
+          - string
+          - timeperiod
+        coerce:
+          - str
+          - positive_time_period
+        required: False
+        meta:
+          label: Auto-shutdown after being paused for this duration (irrigation only). Default 30min. Set 0 to disable.
       schedule:
         type: list
         required: False
@@ -2068,6 +2053,16 @@ irrigation:
         default: False
         meta:
           label: Run zones in reverse order.
+      pause_timeout:
+        type:
+          - string
+          - timeperiod
+        coerce:
+          - str
+          - positive_time_period
+        required: False
+        meta:
+          label: Auto-shutdown after being paused for this duration. Default 30min. Set 0 to disable.
       schedule:
         type: list
         required: False

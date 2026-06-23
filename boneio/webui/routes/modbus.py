@@ -51,6 +51,17 @@ class ModbusSetRequest(BaseModel):
     value: int | float
 
 
+class ModbusSetMultipleRequest(BaseModel):
+    """Request model for Modbus SET multiple registers operation (FC16).
+
+    Writes a list of 16-bit values to consecutive registers starting
+    at ``register_address``.
+    """
+    address: int
+    register_address: int
+    values: list[int]
+
+
 class ModbusSearchRequest(BaseModel):
     """Request model for Modbus SEARCH operation."""
     register_address: int = 1
@@ -217,6 +228,75 @@ async def modbus_set(
                 
         except Exception as e:
             _LOGGER.error(f"Modbus SET error: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
+
+@router.post("/modbus/set_multiple")
+async def modbus_set_multiple(
+    request: ModbusSetMultipleRequest,
+    boneio_manager: Manager = Depends(get_manager)
+):
+    """Write multiple registers to a Modbus device (FC16).
+
+    Sends a Write Multiple Registers (FC16) request to write a list
+    of 16-bit values to consecutive registers starting at
+    ``register_address``.
+
+    Args:
+        request: ModbusSetMultipleRequest with device address, starting
+            register and list of values.
+
+    Returns:
+        Success status with number of registers written.
+    """
+    modbus_client = boneio_manager.modbus.get_modbus_client()
+    if not modbus_client:
+        return {
+            "success": False,
+            "error": "Modbus is not configured. Add 'modbus' section to your config.",
+        }
+
+    if not request.values:
+        return {
+            "success": False,
+            "error": "Values list cannot be empty.",
+        }
+
+    # Validate each value fits in 16-bit unsigned range
+    for i, val in enumerate(request.values):
+        if val < 0 or val > 65535:
+            return {
+                "success": False,
+                "error": f"Value at index {i} ({val}) is out of 16-bit range (0-65535).",
+            }
+
+    modbus_client.suspend()
+    async with _modbus_helper_lock:
+        try:
+            result = await modbus_client.write_registers_direct(
+                unit=request.address,
+                address=request.register_address,
+                values=request.values,
+            )
+
+            if result:
+                return {
+                    "success": True,
+                    "message": f"{len(request.values)} register(s) written successfully (FC16).",
+                    "message_key": "write_multiple_success",
+                    "count": len(request.values),
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "FC16 write operation failed - no response from device",
+                }
+
+        except Exception as e:
+            _LOGGER.error("Modbus SET_MULTIPLE (FC16) error: %s", e)
             return {
                 "success": False,
                 "error": str(e),
@@ -620,8 +700,25 @@ async def modbus_configure_device(
                     modbus_client.client.baudrate = request.current_baudrate
                     modbus_client.client.connect()
             
+            devices_dir = os.path.normpath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "modbus", "devices")
+            )
+            device_file = f"{request.device}.json"
+            device_path = None
+            for root, _dirs, files in os.walk(devices_dir):
+                if device_file in files:
+                    device_path = root
+                    break
+
+            if device_path is None:
+                return {
+                    "success": False,
+                    "error_key": "configure_error_not_found",
+                    "error_params": {"device": request.device}
+                }
+
             _db = open_json(
-                path=os.path.join(os.path.dirname(__file__), "..", "..", "modbus", "devices", "sensors"),
+                path=device_path,
                 model=request.device
             )
             set_base = _db.get(SET_BASE, {})
@@ -814,3 +911,25 @@ async def set_entity_labels(
 
     _LOGGER.info("Entity labels saved for %s: %s", coordinator_id, labels)
     return {"coordinator_id": coordinator_id, "labels": labels}
+
+
+@router.get("/modbus/used-addresses")
+async def get_used_addresses(
+    manager: Manager = Depends(get_manager),
+):
+    """Return Modbus addresses currently configured in config.yaml.
+
+    Used by the frontend wizard to prevent address conflicts.
+    """
+    config = manager.config_helper.get_config()
+    used = []
+    for device in config.get("modbus_devices", []):
+        addr = device.get("address")
+        if addr is not None:
+            used.append({
+                "address": int(addr),
+                "model": device.get("model", ""),
+                "id": device.get("id", ""),
+                "name": device.get("name", ""),
+            })
+    return {"used_addresses": used}

@@ -1,5 +1,10 @@
 {
-  "model": "Orno OR-WE-517",
+  "model": "OR-WE-517",
+  "manufacturer": "ORNO",
+  "description": "ORNO OR-WE-517 3-phase energy meter",
+  "category": "energy_meters",
+  "default_address": 1,
+  "default_update_interval": "10s",
   "registers_base": [
     {
       "base": 14,

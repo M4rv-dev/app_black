@@ -5,6 +5,7 @@ import ActionFields, { validateAction, cleanActionFields } from './ActionFields'
 import AiConfigAssistant from './AiConfigAssistant';
 import BlueprintPicker from './widgets/BlueprintPicker';
 import { getInputAvailability, buildInputOptions } from './helpers/inputFilterUtils';
+import { convertTimeperiodToMilliseconds } from './helpers/configSchemaUtils';
 import AreaSelect from './widgets/AreaSelect';
 import { TabsBox } from '@/components/ui/tabs-box';
 import type { 
@@ -124,11 +125,11 @@ const BinarySensorForm: React.FC<BinarySensorFormProps> = ({
   ];
 
   const actionOutputOptions = schema?.items?.properties?.actions?.properties?.pressed?.items?.properties?.action_output?.enum || [
-    'TOGGLE', 'ON', 'OFF'
+    'TOGGLE', 'ON', 'OFF', 'BRIGHTNESS_UP', 'BRIGHTNESS_DOWN', 'BRIGHTNESS_UP_CYCLE', 'BRIGHTNESS_DOWN_CYCLE', 'SET_BRIGHTNESS', 'CYCLE_COLOR', 'CYCLE_PRESET'
   ];
 
   const actionCoverOptions = schema?.items?.properties?.actions?.properties?.pressed?.items?.properties?.action_cover?.enum || [
-    'TOGGLE', 'OPEN', 'CLOSE', 'STOP', 'TOGGLE_OPEN', 'TOGGLE_CLOSE'
+    'TOGGLE', 'OPEN', 'CLOSE', 'STOP', 'TOGGLE_OPEN', 'TOGGLE_CLOSE', 'SMART_TOGGLE', 'TILT', 'TILT_OPEN', 'TILT_CLOSE'
   ];
 
   const updateField = (field: keyof BinarySensorEntity, value: any) => {
@@ -357,7 +358,7 @@ const BinarySensorForm: React.FC<BinarySensorFormProps> = ({
                       type="number"
                       className="input w-full"
                       placeholder="120"
-                      value={typeof data.bounce_time === 'number' ? data.bounce_time : 120}
+                      value={convertTimeperiodToMilliseconds(data.bounce_time) || 120}
                       onChange={(e) => updateField('bounce_time', parseInt(e.target.value) || 120)}
                     />
                     <label className="label">

@@ -15,7 +15,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from boneio.const import OFF, ON, SWITCH
+from boneio.const import OFF, ON, OUTPUT, STATE, SWITCH
 from boneio.core.events import EventBus, async_track_point_in_time, utcnow
 from boneio.core.utils import callback
 from boneio.core.utils.timeperiod import TimePeriod, parse_time_to_seconds
@@ -23,6 +23,7 @@ from boneio.models import OutputState
 from boneio.models.events import OutputEvent
 
 if TYPE_CHECKING:
+    from boneio.core.messaging import MessageBus
     from boneio.integration.interlock import SoftwareInterlockManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -62,6 +63,8 @@ class RemoteOutputBase:
         output_id: str,
         remote_source: str,
         event_bus: EventBus,
+        message_bus: MessageBus | None = None,
+        topic_prefix: str = "",
         output_type: str = SWITCH,
         show_in_ha: bool = False,
         area: str | None = None,
@@ -83,6 +86,8 @@ class RemoteOutputBase:
         self._output_id = output_id
         self._remote_source = remote_source
         self._event_bus = event_bus
+        self._message_bus: MessageBus | None = message_bus
+        self._send_topic = f"{topic_prefix}/{OUTPUT}/{id}" if topic_prefix else ""
         self._output_type = output_type
         self.show_in_ha = show_in_ha
         self.area: str | None = area
@@ -173,14 +178,27 @@ class RemoteOutputBase:
     def _sync_initial_state(self) -> None:
         """Sync initial state from device manager's current known states.
 
-        Reads _light_states or _switch_states from the ESPHome device
-        to populate brightness and on/off state immediately, without
-        waiting for the next state change event.
+        Reads cached states from ESPHome (_light_states / _switch_states)
+        or WLED (_cached_state) to populate brightness and on/off state
+        immediately, without waiting for the next state change event.
         """
         if self._device_manager is None:
             return
 
-        # Try light state first
+        # WLED: sync from WebSocket cached state
+        get_output_is_on = getattr(self._device_manager, "get_output_is_on", None)
+        if get_output_is_on is not None:
+            is_on = get_output_is_on(self._output_id)
+            if is_on is not None:
+                self.on_remote_state_change(is_on)
+                _LOGGER.debug(
+                    "Synced initial WLED state for '%s': on=%s",
+                    self._id,
+                    is_on,
+                )
+                return
+
+        # ESPHome: try light state first
         light_states = getattr(self._device_manager, "_light_states", {})
         _LOGGER.debug(
             "Sync initial state for '%s': output_id='%s', light_states_keys=%s, switch_states_keys=%s",
@@ -203,7 +221,7 @@ class RemoteOutputBase:
             )
             return
 
-        # Try switch state
+        # ESPHome: try switch state
         switch_states = getattr(self._device_manager, "_switch_states", {})
         if self._output_id in switch_states:
             is_on = switch_states[self._output_id]
@@ -376,10 +394,21 @@ class RemoteOutputBase:
     async def async_set_brightness(self, brightness: int, timestamp: float | None = None) -> None:
         """Set brightness on the remote light output.
 
+        Checks interlock before sending the brightness command. Setting
+        brightness implicitly turns the light ON, so interlock rules apply.
+
         Args:
             brightness: Brightness value (0-255).
             timestamp: Optional timestamp for state tracking.
         """
+        # Brightness > 0 effectively turns ON — must check interlock
+        if brightness > 0 and not self.check_interlock():
+            _LOGGER.warning(
+                "Interlock active: cannot set brightness on remote output '%s'",
+                self._id,
+            )
+            return
+
         if not self._resolve_device_manager():
             _LOGGER.error("Remote output '%s' has no device manager, cannot set brightness", self._id)
             return
@@ -466,7 +495,22 @@ class RemoteOutputBase:
     # ------------------------------------------------------------------
 
     def _emit_state_event(self) -> None:
-        """Emit OutputEvent on EventBus for WebSocket/state tracking."""
+        """Emit OutputEvent on EventBus for WebSocket/state tracking.
+
+        Also publishes the current state to the MQTT state topic so that
+        Home Assistant (and any other MQTT consumer) sees the updated state.
+        """
+        # Publish state to MQTT so HA sees the update
+        if self._message_bus and self._send_topic:
+            payload: dict[str, Any] = {STATE: self._state}
+            if self._brightness is not None:
+                payload["brightness"] = self._brightness
+            self._message_bus.send_message(
+                topic=self._send_topic,
+                payload=payload,
+                retain=True,
+            )
+
         output_state = OutputState(
             id=self._id,
             name=self._name,

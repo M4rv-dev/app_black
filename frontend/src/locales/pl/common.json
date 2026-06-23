@@ -126,7 +126,9 @@
     "badge_unsaved": "Niezapisane",
     "no_outputs_available": "Brak dostępnych wyjść",
     "device_label": "Urządzenie",
-    "area_label": "Strefa"
+    "area_label": "Strefa",
+    "copy_ha_dashboard": "Dashboard HA",
+    "dashboard_copied": "Skopiowano!"
   },
   "inputs": {
     "title": "Wejścia",
@@ -1123,7 +1125,33 @@
     "broadcast_mode": "Tryb Broadcast (adres 0)",
     "broadcast_warning": "Tryb broadcast zmieni ustawienia na WSZYSTKICH urządzeniach podłączonych do tej magistrali UART!",
     "creator": "Kreator",
-    "device_creator": "Kreator Konfiguracji Urządzenia"
+    "device_creator": "Kreator Konfiguracji Urządzenia",
+    "fc06_single": "Pojedynczy",
+    "fc16_multiple": "Wiele",
+    "fc06_value_placeholder": "Wartość do zapisu",
+    "fc16_hint": "Zapisz wiele 16-bitowych wartości do kolejnych rejestrów zaczynając od podanego adresu (Modbus FC16).",
+    "fc16_start_register": "Adres Początkowego Rejestru",
+    "fc16_values": "Wartości (16-bit)",
+    "fc16_values_hint": "0\u201365535, oddzielone przecinkami",
+    "fc16_values_placeholder": "np. 100, 200, 300",
+    "fc16_registers_count": "Rejestrów do zapisu",
+    "fc16_invalid_values": "Nieprawidłowe wartości. Wpisz liczby całkowite oddzielone przecinkami (0\u201365535).",
+    "fc16_write_button": "Zapisz Rejestry (FC16)",
+    "write_multiple_success": "Rejestry zapisane pomyślnie (FC16).",
+    "simulator": "Symulator",
+    "simulator_title": "Symuluj urządzenia Modbus w Home Assistant",
+    "simulator_hint": "Utwórz symulowane (sztuczne) urządzenia, aby przetestować dashboard YAML, ikony i karty HA bez fizycznego sprzętu. Dane będą się automatycznie aktualizować realistycznymi wartościami.",
+    "simulator_create": "Stwórz symulowane urządzenie",
+    "active_simulations": "Aktywne symulacje",
+    "simulation_send_update": "Wyślij nowe wartości",
+    "simulation_delete": "Usuń",
+    "simulation_dashboard": "Dashboard YAML",
+    "simulation_dashboard_title": "Dashboard YAML dla {{model}}",
+    "simulation_dashboard_hint": "Skopiuj poniższy YAML i wklej go do dashboardu Home Assistant (Edytuj Dashboard → Edytor konfiguracji RAW).",
+    "simulation_dashboard_copied": "Skopiowano do schowka!",
+    "simulation_dashboard_copy": "Kopiuj YAML",
+    "simulation_dashboard_close": "Zamknij",
+    "simulation_visual": "Wizualny"
   },
   "modbus_creator": {
     "device_info": "Informacje o Urządzeniu",
@@ -1631,7 +1659,11 @@
     "date_active": "Filtr dat",
     "date_from": "Od",
     "date_to": "Do",
-    "date_apply": "Zastosuj"
+    "date_apply": "Zastosuj",
+    "exclude_modules": "Wyklucz",
+    "excluded_count_one": "{{count}} wykluczony",
+    "excluded_count_other": "{{count}} wykluczonych",
+    "search_placeholder": "Szukaj w logach..."
   },
   "tools": {
     "title": "Narzędzia",
@@ -1901,6 +1933,11 @@
     "run_every_n": "Uruchamiaj co",
     "run_every_n_hint": "Uruchamiaj tę strefę co N-te zaplanowane podlewanie. 1 = zawsze, 2 = co drugie, itd. Ręczne uruchomienia nie są liczone.",
     "zone_enabled": "Strefa włączona",
+    "zone_disabled": "wyłączona",
+    "zone_no_valve": "brak zaworu",
+    "zone_summary_valve": "Zawór",
+    "zone_move_up": "Przesuń w górę",
+    "zone_move_down": "Przesuń w dół",
     "water_sources": "Źródła wody",
     "water_source": "Źródło wody",
     "add_water_source": "Dodaj źródło wody",
@@ -1955,9 +1992,35 @@
     "pump_stop_valve_delay": "Stop pompy (opóźnienie zaworu)",
     "pump_stop_valve_delay_hint": "Pompa wyłącza się pierwsza, zawór zamyka się po tym opóźnieniu.",
     "runtime_settings_hint": "Ustawienia czasu pracy (mnożnik, powtórzenie, tryb czuwania, auto-przejście, odwrócenie) można zmienić w panelu Nawadnianie, a nie w konfiguracji.",
+    "pause_timeout": "Timeout pauzy",
+    "pause_timeout_hint": "Automatyczne wyłączenie po tym czasie w stanie pauzy. Domyślnie 30min. Ustaw 0 aby wyłączyć.",
+    "pause_timeout_active": "Auto-wyłączenie za {time}",
     "long_press_to_edit": "Przytrzymaj aby edytować ustawienia",
     "go_to_settings": "Przejdź do Ustawień",
-    "go_to_settings_confirm": "Czy chcesz edytować ustawienia tego kontrolera nawadniania?"
+    "go_to_settings_confirm": "Czy chcesz edytować ustawienia tego kontrolera nawadniania?",
+    "ai_setup": "Kreator AI",
+    "ai_setup_hint": "Wygeneruj konfigurację nawadniania z pomocą AI",
+    "ai_wizard_description": "Kopiuje specjalny prompt AI do schowka. Wklej go w ChatGPT, Gemini lub dowolne darmowe AI — poprowadzi Cię krok po kroku. Potem wróć i użyj 'Wklej odpowiedź AI' aby zastosować wynik.",
+    "ai_paste_hint": "Wklej konfigurację JSON z asystenta AI",
+    "ai_paste_desc": "Wklej JSON zwrócony przez asystenta AI. Tylko poprawne pola nawadniania zostaną zastosowane w formularzu.",
+    "ai_step1": "Krok 1: Skopiuj prompt",
+    "ai_step1_desc": "Skopiuj ten prompt i wklej go do ChatGPT, Claude lub dowolnego asystenta AI. AI zapyta Cię o Twoje potrzeby nawadniania.",
+    "ai_step2": "Krok 2: Wklej odpowiedź AI",
+    "ai_step2_desc": "Gdy AI wygeneruje konfigurację JSON, wklej ją tutaj.",
+    "ai_copy_prompt": "Kopiuj prompt",
+    "ai_copied": "Skopiowano!",
+    "ai_copy_failed": "Nie udało się skopiować promptu do schowka.",
+    "ai_paste_placeholder": "Wklej JSON z AI tutaj...",
+    "ai_import": "Importuj konfigurację",
+    "ai_apply": "Zastosuj w formularzu",
+    "ai_import_success": "Konfiguracja zaimportowana pomyślnie: {ids}. Zrestartuj urządzenie aby zastosować.",
+    "ai_apply_success": "Konfiguracja AI zastosowana w formularzu. Sprawdź strefy i harmonogram, potem zapisz.",
+    "ai_conflict": "Kontroler(y) już istnieją: {ids}. Najpierw je usuń lub użyj innych ID.",
+    "ai_invalid_json": "Nieprawidłowy JSON. Upewnij się, że wklejasz kompletny blok JSON z odpowiedzi AI.",
+    "ai_context_error": "Nie udało się pobrać kontekstu urządzenia. Sprawdź połączenie.",
+    "ha_dashboard": "Dashboard HA",
+    "copy_ha_dashboard": "Skopiuj YAML dashboardu (obsługuje tryb Sekcje) HA nawadniania do schowka",
+    "dashboard_copied": "Skopiowano!"
   },
   "migrations": {
     "title": "Migracje systemowe",
@@ -2152,5 +2215,145 @@
     "doorbell_desc": "Włącz wyjście gdy wciśnięte, wyłącz po zwolnieniu.",
     "quick_setup": "Szybka konfiguracja akcji",
     "quick_setup_hint": "Skonfiguruj akcje dla czujki ruchu, czujnika drzwi, dzwonka — jednym kliknięciem"
+  },
+  "dashboard_wizard": {
+    "title": "Dashboard HA",
+    "heading": "Sekcje dashboardu HA",
+    "step_types": "Typ",
+    "step_area": "Obszar",
+    "step_export": "Eksport",
+    "select_types": "Co chcesz wyeksportować?",
+    "select_area": "Dla jakiego obszaru?",
+    "all_areas": "Wszystkie obszary",
+    "no_area": "Bez przypisanego obszaru",
+    "outputs": "Wyjścia (światła, przełączniki)",
+    "covers": "Rolety",
+    "irrigation": "Nawadnianie",
+    "groups": "Grupy wyjść",
+    "alarms": "Panele alarmowe",
+    "gates": "Bramy i drzwi",
+    "modbus": "Czujniki Modbus",
+    "ready_title": "Gotowe!",
+    "ready_desc": "Twój dashboard zawiera:",
+    "copy_yaml": "Kopiuj YAML do schowka",
+    "copied": "Skopiowano!",
+    "paste_hint": "Wklej w HA: Dashboard → Edytuj → Dodaj kartę → Ręcznie (YAML)",
+    "back": "Wstecz",
+    "next": "Dalej",
+    "new_export": "Nowy eksport",
+    "no_entities": "Brak encji dla tego wyboru",
+    "count": "{{count}} encji"
+  },
+  "modbus_wizard": {
+    "title": "Dodaj Urządzenie Modbus",
+    "step1_label": "Kategoria",
+    "step2_label": "Model Urządzenia",
+    "step3_label": "Ustawienia",
+    "step1_title": "Wybierz kategorię urządzenia:",
+    "search_placeholder": "Szukaj urządzenia po nazwie, modelu lub marce...",
+    "search_results": "Wyniki wyszukiwania",
+    "no_results": "Nie znaleziono urządzeń pasujących do wyszukiwania.",
+    "step2_title": "Wybierz model urządzenia:",
+    "step3_title": "Ustawienia",
+    "category_energy_meters": "Liczniki energii",
+    "category_hvac": "HVAC / Wentylacja (Rekuperacja)",
+    "category_inverters": "Falowniki",
+    "category_sensors": "Czujniki",
+    "category_other": "Inne",
+    "no_devices": "Nie znaleziono urządzeń w tej kategorii.",
+    "selected_device": "Wybrane Urządzenie",
+    "address": "Adres Modbus",
+    "address_range": "Zakres: 1 - 247",
+    "address_conflict_alert": "Ten adres Modbus jest już w użyciu!",
+    "address_in_use": "Adres {{address}} jest już zajęty przez {{device}}",
+    "suggested_address_prefix": "Sugerowany wolny adres:",
+    "name": "Nazwa wyświetlana",
+    "area": "Obszar / Pokój",
+    "select_area": "Wybierz obszar (opcjonalnie)",
+    "update_interval": "Interwał odczytu",
+    "id": "Identyfikator urządzenia (ID)",
+    "id_help": "Unikalny identyfikator alfanumeryczny",
+    "back": "Wstecz",
+    "add_device": "Dodaj Urządzenie"
+  },
+  "modbus_devices": {
+    "boneio-edge-temp": {
+      "description": "Rozszerzenie czujników temperatury boneIO Edge Temp"
+    },
+    "cwt": {
+      "description": "Czujnik wilgotności, temperatury i zasolenia gleby CWT"
+    },
+    "dts1964_3f": {
+      "description": "3-fazowy licznik energii i mocy DTS1964"
+    },
+    "dyp-a12-ultrasonic": {
+      "description": "Ultradźwiękowy czujnik odległości/poziomu DYP-A12"
+    },
+    "eht-topventil-plus": {
+      "description": "Wentylacja EHT Topventil Plus"
+    },
+    "esp32_relay_x4_modbus": {
+      "description": "4-kanałowa płytka przekaźnikowa Modbus ESP32 boneIO"
+    },
+    "fujitsu-ac": {
+      "description": "Sterowanie klimatyzacją Fujitsu"
+    },
+    "gdfs": {
+      "description": "Przepływomierz serii GD (GDFS)"
+    },
+    "gdfx": {
+      "description": "Przepływomierz serii GD (GDFX)"
+    },
+    "le-03mw": {
+      "description": "3-fazowy licznik energii F&F LE-03MW"
+    },
+    "le-03mwct": {
+      "description": "3-fazowy licznik energii z przekładnikami F&F LE-03MW CT"
+    },
+    "liquid-sensor": {
+      "description": "Uniwersalny czujnik poziomu cieczy Modbus"
+    },
+    "n4dsc08": {
+      "description": "8-kanałowy sterownik przekaźników Modbus N4DSC08"
+    },
+    "orno-or-we-517": {
+      "description": "3-fazowy licznik energii ORNO OR-WE-517"
+    },
+    "pt100": {
+      "description": "Przetwornik temperatury PT100 na Modbus"
+    },
+    "r4dcb08": {
+      "description": "8-kanałowy sterownik przekaźników Modbus R4DCB08"
+    },
+    "sdm120": {
+      "description": "1-fazowy licznik energii Eastron SDM120"
+    },
+    "sdm630": {
+      "description": "3-fazowy licznik energii Eastron SDM630"
+    },
+    "sht20": {
+      "description": "Czujnik temperatury i wilgotności SHT20"
+    },
+    "sht30": {
+      "description": "Czujnik temperatury i wilgotności SHT30"
+    },
+    "socomec_e03": {
+      "description": "Licznik energii Socomec Countis E03"
+    },
+    "socomec_e23": {
+      "description": "Licznik energii Socomec Countis E23"
+    },
+    "sofar": {
+      "description": "Falownik fotowoltaiczny Sofar Solar"
+    },
+    "thessla": {
+      "description": "Rekuperator Thessla Green"
+    },
+    "ventclear": {
+      "description": "Wentylacja Ventclear"
+    },
+    "wanas415": {
+      "description": "Rekuperator Wanas"
+    }
   }
 }

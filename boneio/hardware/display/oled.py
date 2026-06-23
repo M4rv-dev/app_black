@@ -695,7 +695,7 @@ class Oled:
             if self._safe_draw(draw_fn, label=f"render_display:{self._current_screen}"):
                 register_fn()
 
-        if not self._cancel_sleep_handle and self._sleep_timeout.total_seconds > 0:
+        if self._sleep_timeout.total_seconds > 0:
             self.start_sleep_timer()
 
     def _render_plan(self, data: dict):

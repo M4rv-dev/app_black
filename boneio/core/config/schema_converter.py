@@ -267,13 +267,10 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
-    # Use the canonical schema loader so module-provided extensions
-    # (boneio/modules/*/schema_extension.yaml) are merged in before
-    # generating the JSON schemas served to the frontend.
     from boneio.core.config.yaml_util import _get_schema, clear_config_cache
-    clear_config_cache()  # force re-read in case caller already loaded
+    clear_config_cache()
     schema = _get_schema()
-    
+
     # Convert and save the main schema
     json_schema = convert_cerberus_to_json_schema(schema)
     main_schema_file = os.path.join(output_dir, "config.schema.json")

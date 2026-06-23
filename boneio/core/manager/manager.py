@@ -628,7 +628,7 @@ class Manager:
         self,
         id: str,
         ha_type: str,
-        payload: dict,
+        payload: dict[str, Any] | str,
     ) -> None:
         """Publish a pre-built HA autodiscovery payload.
 
@@ -872,6 +872,8 @@ class Manager:
         """Resolve a boneIO entity by type and ID for condition evaluation.
 
         Used by the conditions system to check entity states.
+        Remote outputs from ``remote_outputs`` config are registered in
+        OutputManager, so they are resolved via ``entity_type='output'``.
 
         Args:
             entity_type: Entity type ('binary_sensor', 'cover', 'output', 'light')
@@ -882,13 +884,13 @@ class Manager:
         """
         if entity_type in ("output", "light"):
             return self.outputs.get_output(entity_id) or self.outputs.get_output_group(entity_id)
-        elif entity_type == "cover":
+        if entity_type == "cover":
             return self.covers.get_cover(entity_id)
-        elif entity_type == "binary_sensor":
+        if entity_type == "binary_sensor":
             return self.inputs.get_input(entity_id)
-        else:
-            _LOGGER.warning("Unknown entity type for condition: %s", entity_type)
-            return None
+        _LOGGER.warning("Unknown entity type for condition: %s", entity_type)
+        return None
+
 
     async def execute_actions(
         self,
@@ -1456,6 +1458,8 @@ class Manager:
                 output_id=output_id,
                 remote_source=remote_source,
                 event_bus=self._event_bus,
+                message_bus=self._message_bus,
+                topic_prefix=self._topic_prefix,
                 output_type=output_type,
                 show_in_ha=show_in_ha,
                 area=area,
@@ -1720,7 +1724,16 @@ class Manager:
     async def reconnect_callback(self) -> None:
         """Function to invoke when connection to MQTT is (re-)established.
 
-        Sends online status to MQTT and starts template MQTT subscriptions.
+        Sends online status to MQTT, resends all entity states with retain
+        so that Home Assistant immediately knows device positions after a
+        broker restart, and starts template MQTT subscriptions.
+
+        IMPORTANT: This is called on every MQTT reconnect, not just the first
+        connection.  Schedule tasks must NOT be restarted here — they are
+        long-lived ``asyncio.Task``s that sleep until the next fire time.
+        Restarting them on reconnect would cancel the pending sleep and
+        recalculate the next fire time from "now", potentially skipping
+        a schedule that was about to fire.
         """
         _LOGGER.info("Sending online state.")
         topic = f"{self._config_helper.topic_prefix}/{STATE}"
@@ -1729,9 +1742,40 @@ class Manager:
         # Immediately refresh OLED MQTT status (event-driven, no polling delay)
         self.display.notify_mqtt_state_changed()
 
+        # Resend all entity states with retain so HA has correct state
+        # after a broker restart (retained messages may have been lost).
+        _LOGGER.info("Resending all entity states after MQTT reconnect.")
+        await self._resend_all_states()
+
         # Start template entities (subscribe to MQTT command topics)
         await self.templates.start()
-        await self.irrigation.start()
+        await self.irrigation.reconnect()
+
+    async def _resend_all_states(self) -> None:
+        """Resend current state of all entities via MQTT with retain.
+
+        Called on MQTT reconnect to ensure the broker has up-to-date
+        retained messages after a broker restart.  Each entity's
+        ``send_state`` / ``async_send_state`` already publishes with
+        ``retain=True``, so calling them here refreshes the broker's
+        retained store.
+        """
+        # Resend output states
+        for output in self.outputs.get_all_outputs().values():
+            try:
+                if output.output_type not in ("cover", "none"):
+                    await output.async_send_state()
+            except Exception as e:
+                _LOGGER.debug("Error resending output state %s: %s", output.id, e)
+
+        # Resend cover states (send_state now uses retain=True)
+        self.covers._broadcast_all_states()
+
+        _LOGGER.info(
+            "Resent states: %d outputs, %d covers.",
+            len([o for o in self.outputs.get_all_outputs().values() if o.output_type not in ("cover", "none")]),
+            len(self.covers.get_all_covers()),
+        )
 
     async def receive_message(self, topic: str, message: str) -> None:
         """Callback for receiving MQTT messages.
@@ -1797,7 +1841,15 @@ class Manager:
         if msg_type == OUTPUT and command == SET_BRIGHTNESS:
             target_device = self.outputs.get_output(device_id)
             if target_device and target_device.output_type != "none" and message != "":
-                target_device.set_brightness(int(message))
+                brightness_val = int(message)
+                # Brightness > 0 effectively turns ON — must respect interlock
+                if brightness_val > 0 and hasattr(target_device, "check_interlock") and not target_device.check_interlock():
+                    _LOGGER.warning(
+                        "Interlock active: cannot set brightness on '%s'",
+                        device_id,
+                    )
+                    return
+                target_device.set_brightness(brightness_val)
             else:
                 _LOGGER.debug("Target device not found %s.", device_id)
             return

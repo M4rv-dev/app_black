@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -206,6 +208,81 @@ class TestPauseResume:
         ctrl = _make_controller()
         await ctrl.resume()
         assert ctrl.state == ControllerState.IDLE
+
+
+# ── Pause timeout ────────────────────────────────────────────────────────────
+
+
+class TestPauseTimeout:
+    """Verify auto-shutdown when paused too long."""
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_pause_timeout_shuts_down_controller(self, _utc, _timer):
+        """Controller should auto-shutdown after pause timeout expires."""
+        ctrl = _make_controller(pause_timeout_s=60)
+        await ctrl.start_full_cycle()
+        await ctrl.pause()
+
+        assert ctrl.state == ControllerState.PAUSED
+        # Simulate timeout callback firing
+        await ctrl._pause_timeout_callback(FIXED_NOW)
+
+        assert ctrl.state == ControllerState.IDLE
+        assert ctrl._active_zone_idx is None
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_resume_cancels_pause_timeout(self, _utc, _timer):
+        """Resuming should cancel the pause timeout timer."""
+        ctrl = _make_controller(pause_timeout_s=60)
+        await ctrl.start_full_cycle()
+        await ctrl.pause()
+
+        assert ctrl._pause_timer_cancel is not None
+        await ctrl.resume()
+
+        assert ctrl._pause_timer_cancel is None
+        assert ctrl.state == ControllerState.RUNNING
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_pause_timeout_disabled_with_zero(self, _utc, _timer):
+        """Setting pause_timeout_s=0 should disable auto-shutdown."""
+        ctrl = _make_controller(pause_timeout_s=0)
+        await ctrl.start_full_cycle()
+        await ctrl.pause()
+
+        # No pause timer should be armed
+        assert ctrl._pause_timer_cancel is None
+        assert ctrl.state == ControllerState.PAUSED
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_pause_timeout_callback_ignored_if_not_paused(self, _utc, _timer):
+        """If state changed before timeout fires, callback should be a no-op."""
+        ctrl = _make_controller(pause_timeout_s=60)
+        await ctrl.start_full_cycle()
+        assert ctrl.state == ControllerState.RUNNING
+
+        # Simulate stale callback firing while running (not paused)
+        await ctrl._pause_timeout_callback(FIXED_NOW)
+
+        # Should remain running — callback was ignored
+        assert ctrl.state == ControllerState.RUNNING
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_shutdown_cancels_pause_timer(self, _utc, _timer):
+        """Shutdown should cancel any active pause timer."""
+        ctrl = _make_controller(pause_timeout_s=60)
+        await ctrl.start_full_cycle()
+        await ctrl.pause()
+
+        assert ctrl._pause_timer_cancel is not None
+        await ctrl.shutdown()
+
+        assert ctrl._pause_timer_cancel is None
 
 
 # ── Auto-advance & zone transitions ─────────────────────────────────────────
@@ -904,6 +981,182 @@ class TestEligibleZones:
         assert len(eligible) == 1
 
 
+# ── Multi-cycle skip counter synchronization ─────────────────────────────────
+
+
+def _dict_state_manager() -> MagicMock:
+    """State manager backed by a real dict so saves persist across calls."""
+    store: dict[str, Any] = {}
+    sm = MagicMock()
+    sm.get = MagicMock(side_effect=lambda section, key, default: store.get(key, default))
+    sm.save_attribute = MagicMock(side_effect=lambda section, key, value: store.__setitem__(key, value))
+    sm._store = store  # expose for assertions
+    return sm
+
+
+class TestMultiCycleSkipCounterSync:
+    """Regression tests for run_every_n across multiple full cycles.
+
+    These test the exact scenario from production: multiple zones with
+    the same run_every_n in one controller, running daily schedule over
+    multiple days. Before the fix, _eligible_zones() had side effects
+    that desynchronized counters.
+
+    Flow per scheduled cycle:
+      1. ``_eligible_zones()`` reads current skip_count to decide eligibility
+      2. ``_apply_skip_counters()`` then modifies counters for the NEXT cycle
+    """
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_9_zones_run_every_4_stays_synchronized(self, _utc, _timer):
+        """9 zones: 1 always + 8 with run_every_n=4. After N cycles all
+        run_every_n=4 zones must have identical skip_count."""
+        zones = _make_zones(9, duration=10)
+        zones[0].run_every_n = 1  # warzywnik — always
+        for z in zones[1:]:
+            z.run_every_n = 4  # trawniki
+
+        sm = _dict_state_manager()
+        ctrl = _make_controller(zones=zones, state_manager=sm, auto_advance=True)
+
+        for cycle_num in range(1, 9):
+            # Replicate the production flow: eligible FIRST, then apply
+            eligible = ctrl._eligible_zones()
+            ctrl._apply_skip_counters()
+
+            if cycle_num in (1, 2, 3, 5, 6, 7):
+                # Not eligible — only zone_0 (always) eligible
+                assert len(eligible) == 1, f"Cycle {cycle_num}: expected 1 eligible, got {len(eligible)}"
+                assert eligible[0][1].id == "zone_0"
+            elif cycle_num in (4, 8):
+                # Eligible — all 9 zones should run
+                assert len(eligible) == 9, f"Cycle {cycle_num}: expected 9 eligible, got {len(eligible)}"
+
+            # Verify all run_every_n=4 zones have the SAME skip_count
+            skip_counts = {}
+            for z in zones[1:]:
+                key = f"test_ctrl/zone/{z.id}/skip_count"
+                skip_counts[z.id] = sm._store.get(key, 0)
+            values = list(skip_counts.values())
+            assert len(set(values)) == 1, (
+                f"Cycle {cycle_num}: skip_counts desynchronized: {skip_counts}"
+            )
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_apply_skip_counters_increments_correctly(self, _utc, _timer):
+        """Verify counter progression with eligible-first, apply-after flow.
+
+        run_every_n=4: eligible when skip_count >= 3.
+        Flow: check eligible → apply → check eligible → apply → ...
+        """
+        zones = _make_zones(2, duration=10)
+        zones[0].run_every_n = 4
+        zones[1].run_every_n = 1
+
+        sm = _dict_state_manager()
+        ctrl = _make_controller(zones=zones, state_manager=sm)
+
+        # (expected_eligible, expected_skip_after_apply)
+        expectations = [
+            (False, 1),  # cycle 1: skip=0 < 3 → not eligible; apply: 0→1
+            (False, 2),  # cycle 2: skip=1 < 3 → not eligible; apply: 1→2
+            (False, 3),  # cycle 3: skip=2 < 3 → not eligible; apply: 2→3
+            (True, 0),   # cycle 4: skip=3 >= 3 → eligible; apply: reset→0
+            (False, 1),  # cycle 5: skip=0 < 3 → not eligible; apply: 0→1
+            (False, 2),  # cycle 6: skip=1 < 3 → not eligible; apply: 1→2
+            (False, 3),  # cycle 7: skip=2 < 3 → not eligible; apply: 2→3
+            (True, 0),   # cycle 8: skip=3 >= 3 → eligible; apply: reset→0
+        ]
+        for cycle_num, (expect_eligible, expect_skip) in enumerate(expectations, 1):
+            eligible = ctrl._eligible_zones()
+            ctrl._apply_skip_counters()
+            zone0_eligible = any(z.id == "zone_0" for _, z in eligible)
+            key = "test_ctrl/zone/zone_0/skip_count"
+            actual_skip = sm._store.get(key, 0)
+            assert zone0_eligible == expect_eligible, (
+                f"Cycle {cycle_num}: expected eligible={expect_eligible}, got {zone0_eligible}"
+            )
+            assert actual_skip == expect_skip, (
+                f"Cycle {cycle_num}: expected skip_count={expect_skip}, got {actual_skip}"
+            )
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_eligible_zones_is_pure_no_side_effects(self, _utc, _timer):
+        """_eligible_zones() must NOT modify state — calling it multiple
+        times must return the same result."""
+        zones = _make_zones(3, duration=10)
+        for z in zones:
+            z.run_every_n = 3
+
+        sm = _dict_state_manager()
+        ctrl = _make_controller(zones=zones, state_manager=sm)
+
+        # Set skip_count=1 for all zones
+        for z in zones:
+            sm._store[f"test_ctrl/zone/{z.id}/skip_count"] = 1
+
+        result1 = ctrl._eligible_zones()
+        result2 = ctrl._eligible_zones()
+        result3 = ctrl._eligible_zones()
+
+        # All calls should return the same result
+        assert len(result1) == len(result2) == len(result3)
+        # State should be unchanged
+        for z in zones:
+            assert sm._store[f"test_ctrl/zone/{z.id}/skip_count"] == 1
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_mixed_run_every_n_zones_independent(self, _utc, _timer):
+        """Zones with different run_every_n values track independently."""
+        zones = _make_zones(3, duration=10)
+        zones[0].run_every_n = 2  # runs every 2nd cycle
+        zones[1].run_every_n = 3  # runs every 3rd cycle
+        zones[2].run_every_n = 1  # runs every cycle
+
+        sm = _dict_state_manager()
+        ctrl = _make_controller(zones=zones, state_manager=sm)
+
+        # Cycle 1: zone_0 skip=0<1→skip, zone_1 skip=0<2→skip
+        eligible = ctrl._eligible_zones()
+        ctrl._apply_skip_counters()
+        eligible_ids = {z.id for _, z in eligible}
+        assert eligible_ids == {"zone_2"}
+
+        # Cycle 2: zone_0 skip=1>=1→eligible, zone_1 skip=1<2→skip
+        eligible = ctrl._eligible_zones()
+        ctrl._apply_skip_counters()
+        eligible_ids = {z.id for _, z in eligible}
+        assert eligible_ids == {"zone_0", "zone_2"}
+
+        # Cycle 3: zone_0 skip=0<1→skip, zone_1 skip=2>=2→eligible
+        eligible = ctrl._eligible_zones()
+        ctrl._apply_skip_counters()
+        eligible_ids = {z.id for _, z in eligible}
+        assert eligible_ids == {"zone_1", "zone_2"}
+
+        # Cycle 4: zone_0 skip=1>=1→eligible, zone_1 skip=0<2→skip
+        eligible = ctrl._eligible_zones()
+        ctrl._apply_skip_counters()
+        eligible_ids = {z.id for _, z in eligible}
+        assert eligible_ids == {"zone_0", "zone_2"}
+
+        # Cycle 5: zone_0 skip=0<1→skip, zone_1 skip=1<2→skip
+        eligible = ctrl._eligible_zones()
+        ctrl._apply_skip_counters()
+        eligible_ids = {z.id for _, z in eligible}
+        assert eligible_ids == {"zone_2"}
+
+        # Cycle 6: zone_0 skip=1>=1→eligible, zone_1 skip=2>=2→eligible
+        eligible = ctrl._eligible_zones()
+        ctrl._apply_skip_counters()
+        eligible_ids = {z.id for _, z in eligible}
+        assert eligible_ids == {"zone_0", "zone_1", "zone_2"}
+
+
 # ── Topic generation ─────────────────────────────────────────────────────────
 
 
@@ -1021,7 +1274,7 @@ class TestInterlockFault:
         await ctrl.start_full_cycle()
 
         assert ctrl.state == ControllerState.IDLE
-        # Fault published
+        # Legacy fault topic published
         ctrl._message_bus.send_message.assert_any_call(
             topic="boneio/irrigation/test_ctrl/fault",
             payload={
@@ -1033,6 +1286,25 @@ class TestInterlockFault:
             },
             retain=False,
         )
+        # HA event entity also published
+        event_calls = [
+            c for c in ctrl._message_bus.send_message.call_args_list
+            if c.kwargs.get("topic", c.args[0] if c.args else "") == "boneio/irrigation/test_ctrl/event"
+               or (isinstance(c.kwargs, dict) and c.kwargs.get("topic") == "boneio/irrigation/test_ctrl/event")
+        ]
+        # Use keyword args matching
+        found_event = False
+        for c in ctrl._message_bus.send_message.call_args_list:
+            topic = c.kwargs.get("topic") if c.kwargs else None
+            if topic == "boneio/irrigation/test_ctrl/event":
+                payload = json.loads(c.kwargs["payload"])
+                assert payload["event_type"] == "interlock_fault"
+                assert payload["zone"] == "zone_0"
+                assert payload["source"] == "ws_default"
+                assert c.kwargs["retain"] is False
+                found_event = True
+                break
+        assert found_event, "Expected interlock_fault event on event topic"
 
     @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
     @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
@@ -1100,49 +1372,65 @@ class TestInterlockFault:
 
 
 class TestNextFireTime:
-    @patch(f"{MODULE}.utcnow")
-    def test_next_fire_time_today_future(self, mock_utc):
-        # Monday 2026-04-06 at 05:00 → next 06:00 is today
-        mock_utc.return_value = datetime(2026, 4, 6, 5, 0, 0, tzinfo=UTC)
+    """Tests for _next_fire_time.
+
+    _next_fire_time interprets time_str as local time, builds candidate
+    in local tz, and returns UTC.  We mock _local_now to provide a
+    deterministic local time (UTC+2 simulating CEST).
+    """
+
+    CEST = timezone(timedelta(hours=2))
+
+    @patch(f"{MODULE}._local_now")
+    def test_next_fire_time_today_future(self, mock_local):
+        # Monday 2026-04-06 at 05:00 local (CEST) → next 06:00 local is today
+        mock_local.return_value = datetime(2026, 4, 6, 5, 0, 0, tzinfo=self.CEST)
         result = _next_fire_time("06:00", "daily")
-        assert result.hour == 6
+        # 06:00 CEST = 04:00 UTC
+        assert result.hour == 4
         assert result.minute == 0
         assert result.day == 6
 
-    @patch(f"{MODULE}.utcnow")
-    def test_next_fire_time_today_past(self, mock_utc):
-        # Monday 2026-04-06 at 07:00 → next 06:00 is tomorrow
-        mock_utc.return_value = datetime(2026, 4, 6, 7, 0, 0, tzinfo=UTC)
+    @patch(f"{MODULE}._local_now")
+    def test_next_fire_time_today_past(self, mock_local):
+        # Monday 2026-04-06 at 07:00 local (CEST) → next 06:00 local is tomorrow
+        mock_local.return_value = datetime(2026, 4, 6, 7, 0, 0, tzinfo=self.CEST)
         result = _next_fire_time("06:00", "daily")
+        # Tomorrow 06:00 CEST = 04:00 UTC on 2026-04-07
         assert result.day == 7
+        assert result.hour == 4
 
-    @patch(f"{MODULE}.utcnow")
-    def test_next_fire_time_weekdays_only(self, mock_utc):
+    @patch(f"{MODULE}._local_now")
+    def test_next_fire_time_weekdays_only(self, mock_local):
         # Saturday 2026-04-11 → next weekday 06:00 is Monday 2026-04-13
-        mock_utc.return_value = datetime(2026, 4, 11, 7, 0, 0, tzinfo=UTC)
+        mock_local.return_value = datetime(2026, 4, 11, 7, 0, 0, tzinfo=self.CEST)
         result = _next_fire_time("06:00", "weekdays")
         assert result.weekday() in {0, 1, 2, 3, 4}  # Mon-Fri
-        assert result > mock_utc.return_value
+        assert result > mock_local.return_value.astimezone(UTC)
 
-    @patch(f"{MODULE}.utcnow")
-    def test_next_fire_time_weekend_only(self, mock_utc):
+    @patch(f"{MODULE}._local_now")
+    def test_next_fire_time_weekend_only(self, mock_local):
         # Wednesday 2026-04-08 → next weekend 06:00 is Saturday 2026-04-11
-        mock_utc.return_value = datetime(2026, 4, 8, 7, 0, 0, tzinfo=UTC)
+        mock_local.return_value = datetime(2026, 4, 8, 7, 0, 0, tzinfo=self.CEST)
         result = _next_fire_time("06:00", "weekend")
-        assert result.weekday() in {5, 6}  # Sat-Sun
+        # Result is UTC — convert to local to check weekday
+        result_local = result.astimezone(self.CEST)
+        assert result_local.weekday() in {5, 6}  # Sat-Sun
 
-    @patch(f"{MODULE}.utcnow")
-    def test_next_fire_time_specific_day(self, mock_utc):
+    @patch(f"{MODULE}._local_now")
+    def test_next_fire_time_specific_day(self, mock_local):
         # Monday 2026-04-06 → next "wed" is 2026-04-08
-        mock_utc.return_value = datetime(2026, 4, 6, 7, 0, 0, tzinfo=UTC)
+        mock_local.return_value = datetime(2026, 4, 6, 7, 0, 0, tzinfo=self.CEST)
         result = _next_fire_time("06:00", "wed")
-        assert result.weekday() == 2
+        result_local = result.astimezone(self.CEST)
+        assert result_local.weekday() == 2
 
-    @patch(f"{MODULE}.utcnow")
-    def test_next_fire_time_invalid_time_defaults(self, mock_utc):
-        mock_utc.return_value = datetime(2026, 4, 6, 5, 0, 0, tzinfo=UTC)
+    @patch(f"{MODULE}._local_now")
+    def test_next_fire_time_invalid_time_defaults(self, mock_local):
+        mock_local.return_value = datetime(2026, 4, 6, 5, 0, 0, tzinfo=self.CEST)
         result = _next_fire_time("bad:time", "daily")
-        assert result.hour == 6
+        # Defaults to 06:00 local = 04:00 UTC
+        assert result.hour == 4
         assert result.minute == 0
 
 
@@ -1230,3 +1518,189 @@ class TestEdgeCases:
         ctrl._active_zone_idx = None
         await ctrl._advance_to_next_zone()
         assert ctrl.state == ControllerState.IDLE
+
+
+# ── Event entity publishing ──────────────────────────────────────────────────────
+
+
+def _find_event(ctrl, event_type: str) -> dict | None:
+    """Find a published event of given type from the message bus calls."""
+    for c in ctrl._message_bus.send_message.call_args_list:
+        topic = c.kwargs.get("topic")
+        if topic == f"boneio/irrigation/{ctrl.id}/event":
+            payload = json.loads(c.kwargs["payload"])
+            if payload.get("event_type") == event_type:
+                return payload
+    return None
+
+
+class TestEventPublishing:
+    """Tests for HA event entity notifications."""
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_standby_blocked_event_on_full_cycle(self, _utc, _timer):
+        """Starting full cycle in standby mode should fire standby_blocked event."""
+        ctrl = _make_controller(standby=True)
+        await ctrl.start_full_cycle()
+
+        event = _find_event(ctrl, "standby_blocked")
+        assert event is not None, "Expected standby_blocked event"
+        assert event["controller"] == "test_ctrl"
+        assert "standby" in event["message"].lower()
+
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_standby_blocked_event_on_single_zone(self, _utc, _timer):
+        """Starting single zone in standby mode should fire standby_blocked event with zone."""
+        ctrl = _make_controller(standby=True)
+        await ctrl.start_single_zone("zone_1")
+
+        event = _find_event(ctrl, "standby_blocked")
+        assert event is not None, "Expected standby_blocked event"
+        assert event["zone"] == "zone_1"
+
+    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_cycle_complete_event(self, _utc, _timer, _sleep):
+        """Advancing past last zone should fire cycle_complete event."""
+        zones = _make_zones(2)
+        ctrl = _make_controller(zones=zones, auto_advance=True)
+        await ctrl.start_full_cycle()
+
+        await ctrl._advance_to_next_zone()  # 0 -> 1
+        # No event yet — still running
+        assert _find_event(ctrl, "cycle_complete") is None
+
+        await ctrl._advance_to_next_zone()  # 1 -> done
+        event = _find_event(ctrl, "cycle_complete")
+        assert event is not None, "Expected cycle_complete event"
+        assert event["controller"] == "test_ctrl"
+
+    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_interlock_fault_event_payload(self, _utc, _timer, _sleep):
+        """Interlock fault should fire event with zone and source details."""
+        master = _mock_valve("master")
+        master.async_turn_on = AsyncMock(return_value=False)
+        ws = _make_water_source(source_id="rainwater", outputs=[master])
+        ctrl = _make_controller(water_sources=[ws])
+
+        await ctrl.start_full_cycle()
+
+        event = _find_event(ctrl, "interlock_fault")
+        assert event is not None, "Expected interlock_fault event"
+        assert event["zone"] == "zone_0"
+        assert event["source"] == "rainwater"
+        assert "interlock" in event["message"].lower()
+
+    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_event_not_retained(self, _utc, _timer, _sleep):
+        """Events should be published with retain=False."""
+        ctrl = _make_controller(standby=True)
+        await ctrl.start_full_cycle()
+
+        for c in ctrl._message_bus.send_message.call_args_list:
+            topic = c.kwargs.get("topic")
+            if topic == f"boneio/irrigation/{ctrl.id}/event":
+                assert c.kwargs["retain"] is False, "Event should not be retained"
+
+    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_no_cycle_complete_on_manual_shutdown(self, _utc, _timer, _sleep):
+        """Manual shutdown should NOT fire cycle_complete event."""
+        ctrl = _make_controller()
+        await ctrl.start_full_cycle()
+        await ctrl.shutdown()
+
+        assert _find_event(ctrl, "cycle_complete") is None
+
+
+# ── Schedule survival after shutdown ──────────────────────────────────────────
+
+
+class TestScheduleSurvival:
+    """Regression tests: shutdown() must NOT kill schedule tasks.
+
+    Previously, shutdown() called stop_schedules() which cancelled the
+    schedule asyncio.Tasks.  When a scheduled cycle completed and called
+    shutdown() internally (via _advance_to_next_zone → shutdown), the
+    schedule task was killed permanently — the next day's schedule would
+    never fire.
+    """
+
+    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_shutdown_preserves_schedule_tasks(self, _utc, _timer, _sleep):
+        """shutdown() should NOT cancel schedule tasks."""
+        ctrl = _make_controller(schedule=[{"time": "08:00", "days": "daily"}])
+        # Simulate schedule tasks being present
+        mock_task = MagicMock()
+        ctrl._schedule_tasks = [mock_task]
+
+        await ctrl.start_full_cycle()
+        await ctrl.shutdown()
+
+        # Schedule tasks must survive
+        assert len(ctrl._schedule_tasks) == 1
+        mock_task.cancel.assert_not_called()
+
+    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_full_stop_cancels_schedule_tasks(self, _utc, _timer, _sleep):
+        """full_stop() SHOULD cancel schedule tasks (used for teardown)."""
+        ctrl = _make_controller(schedule=[{"time": "08:00", "days": "daily"}])
+        mock_task = MagicMock()
+        ctrl._schedule_tasks = [mock_task]
+
+        await ctrl.full_stop()
+
+        # Schedule tasks must be cancelled and cleared
+        mock_task.cancel.assert_called_once()
+        assert len(ctrl._schedule_tasks) == 0
+
+    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_cycle_complete_preserves_schedule(self, _utc, _timer, _sleep):
+        """Full cycle completion via _advance_to_next_zone should NOT kill schedule."""
+        zones = _make_zones(2)
+        ctrl = _make_controller(zones=zones, auto_advance=True)
+        mock_task = MagicMock()
+        ctrl._schedule_tasks = [mock_task]
+
+        await ctrl.start_full_cycle()
+        await ctrl._advance_to_next_zone()  # 0 -> 1
+        await ctrl._advance_to_next_zone()  # 1 -> shutdown (cycle complete)
+
+        assert ctrl.state == ControllerState.IDLE
+        # Schedule task must survive
+        assert len(ctrl._schedule_tasks) == 1
+        mock_task.cancel.assert_not_called()
+
+    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
+    @patch(f"{MODULE}.async_track_point_in_time", return_value=MagicMock())
+    @patch(f"{MODULE}.utcnow", return_value=FIXED_NOW)
+    async def test_start_full_cycle_while_running_preserves_schedule(self, _utc, _timer, _sleep):
+        """Starting new cycle while running should shutdown previous but keep schedule."""
+        ctrl = _make_controller()
+        mock_task = MagicMock()
+        ctrl._schedule_tasks = [mock_task]
+
+        await ctrl.start_full_cycle()
+        assert ctrl.state == ControllerState.RUNNING
+
+        # Start again — should shutdown previous cycle
+        await ctrl.start_full_cycle()
+        assert ctrl.state == ControllerState.RUNNING
+
+        # Schedule must survive both cycles
+        assert len(ctrl._schedule_tasks) == 1
+        mock_task.cancel.assert_not_called()

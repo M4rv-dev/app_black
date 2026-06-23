@@ -1,4 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
+import axios from '@/api/axios';
+import { copyToClipboard } from '@/utils/clipboard';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useTableSort } from '@/hooks/useTableSort';
 import TableActions from './TableActions';
@@ -17,17 +19,40 @@ interface TemplateTableProps {
   allAreas: Area[];
   onEdit: (index: number) => void;
   onDelete: (index: number) => void;
+  onDuplicate?: (index: number) => void;
 }
 
 const PLATFORM_ICONS: Record<string, string> = {
   thermostat: '🌡️',
   alarm_control_panel: '🚨',
+  irrigation: '💧',
+  gate_cover: '🚪',
 };
 
-const TemplateTable: React.FC<TemplateTableProps> = ({ items, allAreas, onEdit, onDelete }) => {
+const TemplateTable: React.FC<TemplateTableProps> = ({ items, allAreas, onEdit, onDelete, onDuplicate }) => {
   const { t } = useTranslation();
   const [filter, setFilter] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const { sortConfig, toggleSort, resetSort, sortItems, isSorted } = useTableSort('template');
+
+  /**
+   * Copy HA dashboard YAML for a specific irrigation controller to clipboard.
+   */
+  const handleCopyDashboard = useCallback(async (ctrlId: string) => {
+    try {
+      setCopiedId(ctrlId);
+      const { data } = await axios.get(`/api/irrigation/dashboard?ctrl_id=${encodeURIComponent(ctrlId)}`);
+      if (data?.yaml) {
+        await copyToClipboard(data.yaml);
+        setTimeout(() => setCopiedId(null), 2000);
+      } else {
+        setCopiedId(null);
+      }
+    } catch (err) {
+      console.error('Failed to fetch dashboard YAML', err);
+      setCopiedId(null);
+    }
+  }, []);
 
   const filteredItems = useMemo(() => {
     if (!filter.trim()) return items.map((item, index) => ({ item, originalIndex: index }));
@@ -104,6 +129,10 @@ const TemplateTable: React.FC<TemplateTableProps> = ({ items, allAreas, onEdit, 
               subtitle={item.name ? item.id : undefined}
               onEdit={() => onEdit(originalIndex)}
               onDelete={() => onDelete(originalIndex)}
+              onDuplicate={onDuplicate ? () => onDuplicate(originalIndex) : undefined}
+              onDashboard={item.platform === 'irrigation' && item.id
+                ? () => handleCopyDashboard(item.id)
+                : undefined}
               fields={[
                 { label: t('template.platform'), value: <span className="badge badge-primary badge-xs">{getPlatformLabel(item.platform)}</span> },
                 { label: t('array_table_widget.details'), value: getDetails(item) || '-' },
@@ -156,6 +185,13 @@ const TemplateTable: React.FC<TemplateTableProps> = ({ items, allAreas, onEdit, 
                     <TableActions
                       onEdit={() => onEdit(originalIndex)}
                       onDelete={() => onDelete(originalIndex)}
+                      onDuplicate={onDuplicate ? () => onDuplicate(originalIndex) : undefined}
+                      onDashboard={item.platform === 'irrigation' && item.id
+                        ? () => handleCopyDashboard(item.id)
+                        : undefined}
+                      dashboardTitle={copiedId === item.id
+                        ? t('irrigation.dashboard_copied')
+                        : t('irrigation.copy_ha_dashboard')}
                     />
                   </Td>
                 </Tr>

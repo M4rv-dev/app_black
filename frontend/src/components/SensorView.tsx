@@ -158,6 +158,7 @@ export default function SensorView() {
                     accentColor={group.accentColor}
                     strokeColor={group.strokeColor}
                     fillColor={group.fillColor}
+                    attributes={sensor.attributes}
                   />
                 ))}
               </div>

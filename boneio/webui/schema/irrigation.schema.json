@@ -238,6 +238,15 @@
             "description": "Run zones in reverse order.",
             "title": "Reverse"
           },
+          "pause_timeout": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "x-timeperiod": true,
+            "description": "Auto-shutdown after being paused for this duration. Default 30min. Set 0 to disable.",
+            "title": "Pause timeout"
+          },
           "schedule": {
             "type": [
               "array",

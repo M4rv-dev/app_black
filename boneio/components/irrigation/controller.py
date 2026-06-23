@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 import time
 import traceback
@@ -75,6 +76,8 @@ class IrrigationController:
         repeat: int = 0,
         auto_advance: bool = True,
         reverse: bool = False,
+        pause_timeout_s: int = 1800,
+        area_id: str | None = None,
     ) -> None:
         """Initialize irrigation controller.
 
@@ -95,9 +98,12 @@ class IrrigationController:
             repeat: Number of cycle repeats.
             auto_advance: Automatically advance to next zone.
             reverse: Run zones in reverse order.
+            pause_timeout_s: Auto-shutdown after this many seconds in PAUSED state.
+                Default 1800 (30 minutes). Set 0 to disable.
         """
         self.id = id
         self.name = name
+        self.area_id = area_id
         self._topic_prefix = topic_prefix
         self._message_bus = message_bus
         self._event_bus = event_bus
@@ -119,6 +125,8 @@ class IrrigationController:
         self._skip_next_run = False
 
         self._zone_timer_cancel = None
+        self._pause_timer_cancel = None
+        self._pause_timeout_s = max(0, pause_timeout_s)
         self._run_start_utc: datetime | None = None
         self._active_zone_idx: int | None = None
         self._active_zone_remaining_s: int | None = None
@@ -181,6 +189,10 @@ class IrrigationController:
     def _schedule_skip_cmd_topic(self, idx: int) -> str:
         return f"{self._topic_prefix}/cmd/{IRRIGATION}/{self.id}/schedule/{idx}/skip/set"
 
+    def _event_topic(self) -> str:
+        """MQTT topic for HA event entity notifications."""
+        return f"{self._topic_prefix}/{IRRIGATION}/{self.id}/event"
+
     def _state_key(self, suffix: str) -> str:
         return f"{self.id}/{suffix}"
 
@@ -223,6 +235,24 @@ class IrrigationController:
         _LOGGER.debug("Irrigation MQTT publish: topic='%s' payload=%s retain=%s", topic, payload, retain)
         self._message_bus.send_message(topic=topic, payload=payload, retain=retain)
 
+    def _publish_event(self, event_type: str, **attributes: Any) -> None:
+        """Publish an event to the HA event entity topic.
+
+        The payload follows the HA MQTT event entity format:
+        ``{"event_type": "...", ...extra attributes}``.
+
+        Events are NOT retained — they are instantaneous notifications.
+
+        Args:
+            event_type: One of the registered event types
+                (interlock_fault, cycle_complete, standby_blocked).
+            **attributes: Additional key-value pairs included in the event payload.
+        """
+        import json
+
+        payload = {"event_type": event_type, **attributes}
+        self._publish(self._event_topic(), json.dumps(payload), retain=False)
+
     def _ordered_zones(self) -> list[tuple[int, IrrigationZone]]:
         indexed = list(enumerate(self._zones))
         if self._reverse:
@@ -232,43 +262,62 @@ class IrrigationController:
     def _eligible_zones(self) -> list[tuple[int, IrrigationZone]]:
         """Determine which zones are eligible to run in this cycle.
 
+        This is a **pure** function — it does NOT modify skip counters.
+        Use :meth:`_apply_skip_counters` once at the start of a scheduled
+        cycle to advance counters.
+
         Uses a counter-based system: each zone has a skip counter that
         increments every scheduled cycle. When the counter reaches
         run_every_n - 1, the zone is eligible and the counter resets.
-        Manual starts do not affect the counter.
         """
         eligible: list[tuple[int, IrrigationZone]] = []
         for idx, zone in self._ordered_zones():
             if not zone.enabled:
-                _LOGGER.debug("Irrigation %s: zone %s skipped (disabled)", self.id, zone.id)
                 continue
             if zone.run_every_n <= 1:
-                # run_every_n=1 means run every time
                 eligible.append((idx, zone))
                 continue
             counter_key = f"zone/{zone.id}/skip_count"
             skip_count = int(self._get(counter_key, 0))
             if skip_count >= zone.run_every_n - 1:
+                eligible.append((idx, zone))
+        return eligible
+
+    def _apply_skip_counters(self) -> None:
+        """Advance skip counters for all zones at the start of a scheduled cycle.
+
+        For each enabled zone with ``run_every_n > 1``:
+        - If the zone IS eligible (skip_count >= run_every_n - 1),
+          reset counter to 0 (zone will run this cycle).
+        - If the zone is NOT eligible, increment the counter.
+
+        Must be called **exactly once** per scheduled cycle, before
+        ``_eligible_zones()`` is used to build the run list.
+        """
+        for _idx, zone in self._ordered_zones():
+            if not zone.enabled or zone.run_every_n <= 1:
+                continue
+            counter_key = f"zone/{zone.id}/skip_count"
+            skip_count = int(self._get(counter_key, 0))
+            if skip_count >= zone.run_every_n - 1:
+                # Zone is eligible — reset counter
+                self._save(counter_key, 0)
                 _LOGGER.debug(
-                    "Irrigation %s: zone %s eligible (skip_count=%d >= %d)",
+                    "Irrigation %s: zone %s counter reset (was %d, eligible)",
                     self.id,
                     zone.id,
                     skip_count,
-                    zone.run_every_n - 1,
                 )
-                eligible.append((idx, zone))
-                # Reset counter — will be saved when zone finishes in _advance_to_next_zone
             else:
                 skip_count += 1
                 self._save(counter_key, skip_count)
                 _LOGGER.debug(
-                    "Irrigation %s: zone %s NOT eligible (skip_count=%d < %d)",
+                    "Irrigation %s: zone %s counter incremented to %d/%d",
                     self.id,
                     zone.id,
                     skip_count,
                     zone.run_every_n - 1,
                 )
-        return eligible
 
     async def publish_all_states(self) -> None:
         controller_state = ON if self._state in (ControllerState.RUNNING, ControllerState.PAUSED) else OFF
@@ -316,7 +365,23 @@ class IrrigationController:
                 active,
                 self._active_zone_idx,
             )
-            self._publish(self._zone_state_topic(zone.id), {"state": active})
+            zone_payload: dict[str, Any] = {"state": active}
+            # Add next_run attributes for zones with run_every_n > 1
+            if zone.run_every_n > 1:
+                zone_next_dt = self._compute_zone_next_run_time(zone)
+                counter_key = f"zone/{zone.id}/skip_count"
+                skip_count = int(self._get(counter_key, 0))
+                zone_payload["run_every_n"] = zone.run_every_n
+                zone_payload["skip_count"] = skip_count
+                if zone_next_dt is not None:
+                    local_tz = _local_now().tzinfo
+                    next_local = zone_next_dt.astimezone(local_tz)
+                    zone_payload["next_run_iso"] = zone_next_dt.isoformat()
+                    zone_payload["next_run_pretty"] = next_local.strftime("%d %b %Y, %H:%M")
+                else:
+                    zone_payload["next_run_iso"] = ""
+                    zone_payload["next_run_pretty"] = ""
+            self._publish(self._zone_state_topic(zone.id), zone_payload)
             self._publish(
                 self._setting_state_topic(f"zone/{zone.id}/enabled"),
                 {"state": ON if zone.enabled else OFF},
@@ -343,7 +408,23 @@ class IrrigationController:
             {"value": end_time_value},
         )
 
+        # Publish next scheduled run time
+        next_run_value = ""
+        next_run_dt = self._compute_next_run_time()
+        if next_run_dt is not None:
+            next_run_value = next_run_dt.isoformat()
+        self._publish(
+            self._setting_state_topic("next_run_time"),
+            {"value": next_run_value},
+        )
+
     async def shutdown(self) -> None:
+        """Stop the active irrigation cycle without killing schedule tasks.
+
+        This method is safe to call from within a schedule task — it does NOT
+        cancel schedule loops.  Use :meth:`full_stop` to tear down the
+        controller completely (including schedule tasks).
+        """
         _LOGGER.debug(
             "Irrigation %s shutdown called (state=%s, active_zone=%s). Caller: %s",
             self.id,
@@ -351,7 +432,7 @@ class IrrigationController:
             self._active_zone_idx,
             "".join(traceback.format_stack(limit=5)),
         )
-        self.stop_schedules()
+        self._cancel_pause_timer()
         await self._stop_current_zone()
         await self._handle_pump_stop_sequence()
         self._state = ControllerState.IDLE
@@ -360,6 +441,16 @@ class IrrigationController:
         self._single_zone_mode = False
         self._single_zone_target_idx = None
         await self.publish_all_states()
+
+    async def full_stop(self) -> None:
+        """Fully stop the controller including schedule tasks.
+
+        Should only be called by the IrrigationManager when stopping
+        or reloading controllers — never from within a schedule task.
+        """
+        _LOGGER.info("Irrigation %s full_stop: stopping schedules and active cycle", self.id)
+        self.stop_schedules()
+        await self.shutdown()
 
     async def pause(self) -> None:
         if self._state != ControllerState.RUNNING or self._active_zone_idx is None:
@@ -370,11 +461,13 @@ class IrrigationController:
         self._cancel_zone_timer()
         await self._stop_current_zone()
         self._state = ControllerState.PAUSED
+        self._arm_pause_timer()
         await self.publish_all_states()
 
     async def resume(self) -> None:
         if self._state != ControllerState.PAUSED or self._active_zone_idx is None:
             return
+        self._cancel_pause_timer()
         remaining = self._active_zone_remaining_s or self._current_zone_duration_seconds()
         await self._start_zone(self._active_zone_idx, override_duration=remaining)
 
@@ -391,7 +484,7 @@ class IrrigationController:
         await self._advance_to_next_zone(force=True)
 
     async def start_full_cycle(self) -> None:
-        _LOGGER.debug(
+        _LOGGER.info(
             "Irrigation %s start_full_cycle: state=%s standby=%s skip_next=%s",
             self.id,
             self._state.value,
@@ -400,9 +493,19 @@ class IrrigationController:
         )
         if self._standby:
             _LOGGER.info("Irrigation %s is in standby mode, not starting", self.id)
+            self._publish_event(
+                "standby_blocked",
+                controller=self.id,
+                message=f"Irrigation '{self.name}' start blocked: standby mode is active",
+            )
             return
 
         if self._state in (ControllerState.RUNNING, ControllerState.PAUSED):
+            _LOGGER.info(
+                "Irrigation %s: already %s, shutting down before new cycle",
+                self.id,
+                self._state.value,
+            )
             await self.shutdown()
 
         self._single_zone_mode = False
@@ -416,7 +519,7 @@ class IrrigationController:
             _LOGGER.info("Irrigation %s skipped one full cycle", self.id)
             return
 
-        await self._start_cycle_from_eligible()
+        await self._start_cycle_from_eligible(scheduled=True)
 
     async def start_single_zone(self, zone_id: str) -> None:
         _LOGGER.debug(
@@ -428,6 +531,12 @@ class IrrigationController:
         )
         if self._standby:
             _LOGGER.info("Irrigation %s is in standby mode, not starting zone", self.id)
+            self._publish_event(
+                "standby_blocked",
+                controller=self.id,
+                zone=zone_id,
+                message=f"Irrigation '{self.name}' zone '{zone_id}' blocked: standby mode is active",
+            )
             return
 
         match_idx = None
@@ -448,9 +557,18 @@ class IrrigationController:
         _LOGGER.debug("Irrigation %s calling _start_zone(%d) for zone '%s'", self.id, match_idx, zone_id)
         await self._start_zone(match_idx)
 
-    async def _start_cycle_from_eligible(self) -> None:
+    async def _start_cycle_from_eligible(self, scheduled: bool = False) -> None:
+        """Build the eligible zone list and start the first zone.
+
+        When ``scheduled`` is True (i.e. triggered by the daily schedule,
+        not a repeat), skip counters are advanced **after** reading
+        eligibility so that the current counter values decide this cycle
+        and the increments prepare counters for the next one.
+        """
         eligible = self._eligible_zones()
-        _LOGGER.debug(
+        if scheduled:
+            self._apply_skip_counters()
+        _LOGGER.info(
             "Irrigation %s _start_cycle_from_eligible: %d eligible zones: %s",
             self.id,
             len(eligible),
@@ -481,9 +599,6 @@ class IrrigationController:
 
         finished_idx = self._active_zone_idx
         finished_zone = self._zones[finished_idx]
-        # Reset skip counter for scheduled runs only (manual starts don't affect counters)
-        if not self._single_zone_mode:
-            self._save(f"zone/{finished_zone.id}/skip_count", 0)
 
         if self._single_zone_mode:
             _LOGGER.debug("Irrigation %s: single zone mode complete for zone '%s'", self.id, finished_zone.id)
@@ -551,6 +666,11 @@ class IrrigationController:
             await self._start_cycle_from_eligible()
             return
 
+        self._publish_event(
+            "cycle_complete",
+            controller=self.id,
+            message=f"Irrigation '{self.name}' cycle completed",
+        )
         await self.shutdown()
 
     def _ordered_zone_indices(self) -> list[int]:
@@ -590,6 +710,13 @@ class IrrigationController:
         self._active_zone_idx = idx
         self._active_zone_remaining_s = duration
         self._state = ControllerState.RUNNING
+
+        # Publish state immediately so the UI (frontend + HA) shows
+        # RUNNING right away, before any pump/valve delay sleeps.
+        # The timer has not been armed yet so zone_end_time will be
+        # empty, but a second publish happens after hardware activation.
+        self._run_start_utc = utcnow()
+        await self.publish_all_states()
 
         if src is not None:
             if src.pump_start_valve_delay_s > 0:
@@ -718,8 +845,10 @@ class IrrigationController:
     async def _handle_interlock_fault(self, zone_id: str, source_id: str | None) -> None:
         """Handle interlock-blocked activation.
 
-        Shuts down the controller and publishes a fault notification via MQTT
-        so that Home Assistant (or other consumers) can alert the user.
+        Shuts down the controller and publishes both a retained fault status
+        message and a non-retained HA event notification via the event entity.
+        Home Assistant automations can listen to the event entity to trigger
+        mobile push notifications, Telegram messages, etc.
 
         Args:
             zone_id: ID of the zone that was being started.
@@ -734,18 +863,29 @@ class IrrigationController:
             source_info,
         )
 
-        # Publish fault notification on MQTT
+        fault_message = f"Irrigation '{self.name}' stopped: output blocked by interlock (zone: {zone_id})"
+
+        # Publish retained fault status on MQTT (legacy topic)
         fault_payload = {
             "fault": "interlock_blocked",
             "controller": self.id,
             "zone": zone_id,
             "source": source_id or "",
-            "message": f"Irrigation '{self.name}' stopped: output blocked by interlock (zone: {zone_id})",
+            "message": fault_message,
         }
         self._publish(
             f"{self._topic_prefix}/{IRRIGATION}/{self.id}/fault",
             fault_payload,
             retain=False,
+        )
+
+        # Publish HA event entity notification (non-retained, instantaneous)
+        self._publish_event(
+            "interlock_fault",
+            controller=self.id,
+            zone=zone_id,
+            source=source_id or "",
+            message=fault_message,
         )
 
         await self.shutdown()
@@ -798,6 +938,44 @@ class IrrigationController:
 
     async def _zone_timer_callback(self, _timestamp: datetime) -> None:
         await self._advance_to_next_zone(force=False)
+
+    def _cancel_pause_timer(self) -> None:
+        """Cancel the pause timeout timer if active."""
+        if self._pause_timer_cancel is not None:
+            self._pause_timer_cancel()
+            self._pause_timer_cancel = None
+
+    def _arm_pause_timer(self) -> None:
+        """Arm an auto-shutdown timer for the PAUSED state.
+
+        If pause_timeout_s is 0, no timer is set (pause lasts indefinitely).
+        Otherwise, the controller will auto-shutdown after the configured timeout.
+        """
+        self._cancel_pause_timer()
+        if self._pause_timeout_s <= 0:
+            return
+        point = utcnow() + timedelta(seconds=self._pause_timeout_s)
+        self._pause_timer_cancel = async_track_point_in_time(
+            loop=self._event_bus._loop,
+            job=self._pause_timeout_callback,
+            point_in_time=point,
+        )
+        _LOGGER.info(
+            "Irrigation %s: pause timeout armed for %d seconds",
+            self.id,
+            self._pause_timeout_s,
+        )
+
+    async def _pause_timeout_callback(self, _timestamp: datetime) -> None:
+        """Handle pause timeout — auto-shutdown the controller."""
+        if self._state != ControllerState.PAUSED:
+            return
+        _LOGGER.warning(
+            "Irrigation %s: pause timeout expired after %d seconds, shutting down",
+            self.id,
+            self._pause_timeout_s,
+        )
+        await self.shutdown()
 
     async def handle_main_command(self, payload: str) -> None:
         cmd = payload.strip()
@@ -904,36 +1082,222 @@ class IrrigationController:
         self._save(f"schedule/{schedule_idx}/skip", value)
         await self.publish_all_states()
 
+    def _compute_next_run_time(self) -> datetime | None:
+        """Compute the next scheduled run time across all schedules.
+
+        Returns the earliest upcoming fire time, or None if no schedules
+        are configured or the controller is in standby.
+        """
+        if not self._schedule or self._standby:
+            return None
+
+        earliest: datetime | None = None
+        for schedule in self._schedule:
+            time_str = schedule.get("time", "06:00")
+            days = str(schedule.get("days", "daily")).strip().lower()
+            candidate = _next_fire_time(time_str, days)
+            if earliest is None or candidate < earliest:
+                earliest = candidate
+        return earliest
+
+    def _compute_zone_next_run_time(self, zone: IrrigationZone) -> datetime | None:
+        """Compute when a specific zone will actually run next.
+
+        Accounts for ``run_every_n``: if the zone needs 2 more skipped
+        cycles before it's eligible, this returns the fire time of the
+        (skip_remaining + 1)th upcoming schedule.
+
+        Args:
+            zone: The irrigation zone to compute for.
+
+        Returns:
+            Timezone-aware UTC datetime of the zone's next actual run,
+            or None if no schedules are configured or the controller
+            is in standby or the zone is disabled.
+        """
+        if not self._schedule or self._standby or not zone.enabled:
+            return None
+
+        if zone.run_every_n <= 1:
+            # Runs every cycle — same as controller next_run_time
+            return self._compute_next_run_time()
+
+        counter_key = f"zone/{zone.id}/skip_count"
+        skip_count = int(self._get(counter_key, 0))
+        remaining_skips = max(0, (zone.run_every_n - 1) - skip_count)
+
+        # The zone will run on the (remaining_skips + 1)th cycle
+        cycles_until_run = remaining_skips + 1
+
+        # Find the Nth fire time across all schedules
+        # Strategy: collect fire times from all schedules, sort, pick Nth
+        earliest: datetime | None = None
+        for schedule in self._schedule:
+            time_str = schedule.get("time", "06:00")
+            days = str(schedule.get("days", "daily")).strip().lower()
+            candidate = _nth_fire_time(time_str, days, n=cycles_until_run)
+            if earliest is None or candidate < earliest:
+                earliest = candidate
+        return earliest
+
     def start_schedules(self) -> None:
+        """Start all schedule loops as asyncio tasks.
+
+        Cancels any existing schedule tasks first, then creates new ones.
+        Each schedule entry gets its own long-lived asyncio.Task that
+        sleeps until the next fire time.
+        """
         self.stop_schedules()
+        if not self._schedule:
+            _LOGGER.debug("Irrigation %s: no schedules configured", self.id)
+            return
         for idx, schedule in enumerate(self._schedule):
-            task = asyncio.create_task(self._run_schedule_loop(idx, schedule))
+            task = asyncio.create_task(
+                self._run_schedule_loop(idx, schedule),
+                name=f"irrigation_{self.id}_schedule_{idx}",
+            )
             self._schedule_tasks.append(task)
+            _LOGGER.info(
+                "Irrigation %s: schedule task #%d started (time=%s, days=%s)",
+                self.id,
+                idx,
+                schedule.get("time", "06:00"),
+                schedule.get("days", "daily"),
+            )
 
     def stop_schedules(self) -> None:
+        """Cancel all schedule tasks."""
+        if self._schedule_tasks:
+            _LOGGER.info(
+                "Irrigation %s: stopping %d schedule task(s)",
+                self.id,
+                len(self._schedule_tasks),
+            )
         for task in self._schedule_tasks:
             task.cancel()
         self._schedule_tasks = []
 
     async def _run_schedule_loop(self, schedule_idx: int, schedule: dict[str, Any]) -> None:
+        """Run a single schedule entry in a loop.
+
+        Sleeps until the next fire time, then starts a full irrigation cycle.
+        This task runs for the entire lifetime of the controller.
+
+        CRITICAL: This method must NEVER raise an unhandled exception,
+        as that would permanently kill the schedule task with no recovery.
+        All exceptions are caught, logged, and the loop continues with
+        a back-off delay.
+
+        Args:
+            schedule_idx: Index of this schedule in the schedule list.
+            schedule: Schedule configuration dict with 'time' and 'days'.
+        """
         time_str = schedule.get("time", "06:00")
         days = str(schedule.get("days", "daily")).strip().lower()
+        consecutive_errors = 0
+
+        _LOGGER.info(
+            "Irrigation %s: schedule loop #%d started (time=%s, days=%s)",
+            self.id,
+            schedule_idx,
+            time_str,
+            days,
+        )
+
         while True:
-            next_run = _next_fire_time(time_str, days)
-            wait_s = max(1.0, (next_run - utcnow()).total_seconds())
-            await asyncio.sleep(wait_s)
+            try:
+                next_run = _next_fire_time(time_str, days)
+                now = utcnow()
+                wait_s = max(1.0, (next_run - now).total_seconds())
 
-            if bool(schedule.get("skip", False)):
-                schedule["skip"] = False
-                self._save(f"schedule/{schedule_idx}/skip", False)
-                await self.publish_all_states()
-                continue
+                # Convert to local for human-readable log
+                local_tz = _local_now().tzinfo
+                next_run_local = next_run.astimezone(local_tz)
+                _LOGGER.info(
+                    "Irrigation %s: schedule #%d next fire at %s (in %.0f seconds)",
+                    self.id,
+                    schedule_idx,
+                    next_run_local.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                    wait_s,
+                )
 
-            await self.start_full_cycle()
+                await asyncio.sleep(wait_s)
+
+                # Reset error counter on successful wake-up
+                consecutive_errors = 0
+
+                if bool(schedule.get("skip", False)):
+                    _LOGGER.info(
+                        "Irrigation %s: schedule #%d skipped (one-time skip)",
+                        self.id,
+                        schedule_idx,
+                    )
+                    schedule["skip"] = False
+                    self._save(f"schedule/{schedule_idx}/skip", False)
+                    await self.publish_all_states()
+                    continue
+
+                _LOGGER.info(
+                    "Irrigation %s: schedule #%d firing — starting full cycle",
+                    self.id,
+                    schedule_idx,
+                )
+                await self.start_full_cycle()
+
+            except asyncio.CancelledError:
+                _LOGGER.info(
+                    "Irrigation %s: schedule loop #%d cancelled",
+                    self.id,
+                    schedule_idx,
+                )
+                raise
+            except Exception:
+                consecutive_errors += 1
+                backoff_s = min(300, 30 * consecutive_errors)
+                _LOGGER.exception(
+                    "Irrigation %s: schedule loop #%d encountered an error "
+                    "(attempt %d, retrying in %ds)",
+                    self.id,
+                    schedule_idx,
+                    consecutive_errors,
+                    backoff_s,
+                )
+                await asyncio.sleep(backoff_s)
+
+def _local_now() -> datetime:
+    """Return the current time in the system's local timezone.
+
+    Extracted as a module-level function so tests can mock it easily.
+    """
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    return dt.datetime.now(local_tz)
 
 
 def _next_fire_time(time_str: str, days: str) -> datetime:
-    now = utcnow()
+    """Compute next fire time for a schedule entry.
+
+    Shorthand for ``_nth_fire_time(time_str, days, n=1)``.
+    """
+    return _nth_fire_time(time_str, days, n=1)
+
+
+def _nth_fire_time(time_str: str, days: str, n: int = 1) -> datetime:
+    """Compute the Nth upcoming fire time for a schedule entry.
+
+    The user-configured ``time_str`` (e.g. "18:00") is in **local time**.
+    We build candidates in the system's local timezone and then convert
+    to UTC.
+
+    Args:
+        time_str: Schedule time in "HH:MM" format (local time).
+        days: Day filter string ("daily", "weekdays", "weekends", etc.).
+        n: Which occurrence to return (1 = next, 2 = the one after, etc.).
+
+    Returns:
+        Nth fire time as a timezone-aware UTC datetime.
+    """
+    now_local = _local_now()
+
     try:
         hh, mm = time_str.split(":", 1)
         target_h = int(hh)
@@ -942,20 +1306,27 @@ def _next_fire_time(time_str: str, days: str) -> datetime:
         target_h, target_m = 6, 0
 
     allowed_days = _DAYS_MAP.get(days, _DAYS_MAP["daily"])
+    found = 0
 
-    for plus_days in range(0, 8):
-        candidate = (now + timedelta(days=plus_days)).replace(
+    for plus_days in range(0, 366):
+        candidate_local = (now_local + timedelta(days=plus_days)).replace(
             hour=target_h,
             minute=target_m,
             second=0,
             microsecond=0,
         )
-        if candidate.weekday() in allowed_days and candidate > now:
-            return candidate
+        if candidate_local.weekday() in allowed_days and candidate_local > now_local:
+            found += 1
+            if found >= n:
+                return candidate_local.astimezone(dt.UTC)
 
-    return (now + timedelta(days=1)).replace(
+    # Fallback (should never reach for n <= 365)
+    fallback_local = (now_local + timedelta(days=n)).replace(
         hour=target_h,
         minute=target_m,
         second=0,
         microsecond=0,
     )
+    return fallback_local.astimezone(dt.UTC)
+
+

@@ -1085,7 +1085,8 @@
             "enum": [
               "esphome_api",
               "can",
-              "mqtt"
+              "mqtt",
+              "wled"
             ],
             "examples": [
               "esphome_api"
@@ -2012,7 +2013,9 @@
               "DYP-A12-ULTRASONIC",
               "Dts1964_3F",
               "Dyp-A12-Ultrasonic",
+              "EHT-TOPVENTIL-PLUS",
               "ESP32_RELAY_X4_MODBUS",
+              "Eht-Topventil-Plus",
               "Esp32_Relay_X4_Modbus",
               "FUJITSU-AC",
               "Fujitsu-Ac",
@@ -2048,12 +2051,17 @@
               "Socomec_E03",
               "Socomec_E23",
               "Sofar",
+              "THESSLA",
+              "Thessla",
               "VENTCLEAR",
               "Ventclear",
+              "WANAS415",
+              "Wanas415",
               "boneio-edge-temp",
               "cwt",
               "dts1964_3f",
               "dyp-a12-ultrasonic",
+              "eht-topventil-plus",
               "esp32_relay_x4_modbus",
               "fujitsu-ac",
               "gdfs",
@@ -2072,10 +2080,12 @@
               "socomec_e03",
               "socomec_e23",
               "sofar",
-              "ventclear"
+              "thessla",
+              "ventclear",
+              "wanas415"
             ],
             "examples": [
-              "cwt"
+              "boneio-edge-temp"
             ],
             "description": "Model to load from database.",
             "title": "Model"
@@ -8871,6 +8881,15 @@
             "description": "Run zones in reverse order (irrigation only).",
             "title": "Reverse"
           },
+          "pause_timeout": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "x-timeperiod": true,
+            "description": "Auto-shutdown after being paused for this duration (irrigation only). Default 30min. Set 0 to disable.",
+            "title": "Pause timeout"
+          },
           "schedule": {
             "type": [
               "array",
@@ -9159,6 +9178,15 @@
             "default": false,
             "description": "Run zones in reverse order.",
             "title": "Reverse"
+          },
+          "pause_timeout": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "x-timeperiod": true,
+            "description": "Auto-shutdown after being paused for this duration. Default 30min. Set 0 to disable.",
+            "title": "Pause timeout"
           },
           "schedule": {
             "type": [

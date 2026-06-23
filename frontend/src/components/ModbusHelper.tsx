@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
-import { FaPlay, FaSearch, FaCog, FaPlus, FaPause } from 'react-icons/fa';
+import { FaPlay, FaSearch, FaCog, FaPlus, FaPause, FaFlask, FaCode, FaCopy, FaCheck, FaImage } from 'react-icons/fa';
 import ModbusDeviceCreator from './ModbusDeviceCreator';
 import axios from '@/api/axios';
+import { MODBUS_DEVICE_CATALOG } from '../generated/modbusDeviceCatalog';
 
 interface ModbusConfig {
   configured: boolean;
@@ -29,6 +30,9 @@ interface ModbusResult {
   total?: number;
 }
 
+/** Write mode: FC06 = single register, FC16 = multiple registers */
+type WriteMode = 'fc06' | 'fc16';
+
 /**
  * ModbusHelper - UI component for Modbus operations (GET, SET, SEARCH)
  * Uses the existing Modbus client from the manager.
@@ -39,7 +43,7 @@ interface ModbusResult {
  */
 export default function ModbusHelper() {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'get' | 'set' | 'search' | 'configure' | 'creator'>('get');
+  const [activeTab, setActiveTab] = useState<'get' | 'set' | 'search' | 'configure' | 'creator' | 'simulator'>('get');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ModbusResult | null>(null);
   const [config, setConfig] = useState<ModbusConfig | null>(null);
@@ -54,8 +58,10 @@ export default function ModbusHelper() {
   const [valueType, setValueType] = useState('S_WORD');
 
   // SET parameters
+  const [writeMode, setWriteMode] = useState<WriteMode>('fc06');
   const [writeRegisterAddress, setWriteRegisterAddress] = useState(0);
   const [writeValue, setWriteValue] = useState<number | ''>('');
+  const [writeMultipleValues, setWriteMultipleValues] = useState('');
 
   // SEARCH parameters
   const [searchRegisterAddress, setSearchRegisterAddress] = useState(0);
@@ -74,11 +80,37 @@ export default function ModbusHelper() {
   const [configNewBaudrate, setConfigNewBaudrate] = useState<number | ''>(9600);
   const [configBroadcast, setConfigBroadcast] = useState(false);
 
+  // SIMULATOR parameters
+  const [showSimulator, setShowSimulator] = useState(false);
+  const [fakeDevices, setFakeDevices] = useState<any[]>([]);
+  const [selectedSimModel, setSelectedSimModel] = useState('wanas415');
+  const [simAddress, setSimAddress] = useState(1);
+  const [dashboardYaml, setDashboardYaml] = useState<string | null>(null);
+  const [dashboardModel, setDashboardModel] = useState('');
+  const [yamlCopied, setYamlCopied] = useState(false);
+
+  const loadFakeDevices = async () => {
+    try {
+      const { data } = await axios.get('/api/dev/fake-devices');
+      if (Array.isArray(data)) {
+        setFakeDevices(data);
+        setShowSimulator(true);
+      } else {
+        setFakeDevices([]);
+        setShowSimulator(false);
+      }
+    } catch (err) {
+      setFakeDevices([]);
+      setShowSimulator(false);
+    }
+  };
+
   // Load config on mount
   useEffect(() => {
     axios.get('/api/modbus/config')
       .then(res => setConfig(res.data))
       .catch(err => console.error('Failed to load modbus config:', err));
+    loadFakeDevices();
   }, []);
 
   // Pause coordinator polling on mount, resume on unmount
@@ -136,6 +168,45 @@ export default function ModbusHelper() {
         address,
         register_address: writeRegisterAddress,
         value: writeValue,
+      });
+      setResult(data);
+    } catch (err) {
+      setResult({ success: false, error: String(err) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * Parse comma-separated values string into array of 16-bit integers.
+   * Returns null if any value is invalid.
+   */
+  const parseMultipleValues = (input: string): number[] | null => {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    const parts = trimmed.split(',').map(s => s.trim()).filter(s => s !== '');
+    const values: number[] = [];
+    for (const part of parts) {
+      const num = parseInt(part, 10);
+      if (isNaN(num) || num < 0 || num > 65535) return null;
+      values.push(num);
+    }
+    return values.length > 0 ? values : null;
+  };
+
+  const handleSetMultiple = async () => {
+    const values = parseMultipleValues(writeMultipleValues);
+    if (!values) {
+      setResult({ success: false, error: t('modbus_helper.fc16_invalid_values') });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    try {
+      const { data } = await axios.post('/api/modbus/set_multiple', {
+        address,
+        register_address: writeRegisterAddress,
+        values,
       });
       setResult(data);
     } catch (err) {
@@ -259,6 +330,97 @@ export default function ModbusHelper() {
     }
   };
 
+  const handleCreateFakeDevice = async () => {
+    setLoading(true);
+    setResult(null);
+    try {
+      await axios.post(`/api/dev/fake-device/${selectedSimModel}?address=${simAddress}`);
+      await loadFakeDevices();
+      setResult({ success: true, message: `Created simulated device ${simAddress}_${selectedSimModel} in HA` });
+    } catch (err: any) {
+      setResult({ success: false, error: err.response?.data?.error || String(err) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUpdateFakeDevice = async (deviceId: string) => {
+    const match = deviceId.match(/^(\d+)_(.+)$/);
+    if (!match) return;
+    const address = Number(match[1]);
+    const model = match[2];
+    setLoading(true);
+    setResult(null);
+    try {
+      await axios.post(`/api/dev/fake-device/${model}/update?address=${address}`);
+      await loadFakeDevices();
+      setResult({ success: true, message: `Sent updated simulated data for ${deviceId}` });
+    } catch (err: any) {
+      setResult({ success: false, error: err.response?.data?.error || String(err) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRemoveFakeDevice = async (deviceId: string) => {
+    const match = deviceId.match(/^(\d+)_(.+)$/);
+    if (!match) return;
+    const address = Number(match[1]);
+    const model = match[2];
+    setLoading(true);
+    setResult(null);
+    try {
+      await axios.delete(`/api/dev/fake-device/${model}?address=${address}`);
+      await loadFakeDevices();
+      setResult({ success: true, message: `Removed simulated device ${deviceId} from HA` });
+    } catch (err: any) {
+      setResult({ success: false, error: err.response?.data?.error || String(err) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDashboardYaml = async (deviceId: string, style: 'standard' | 'visual' = 'standard') => {
+    const match = deviceId.match(/^(\d+)_(.+)$/);
+    if (!match) return;
+    const address = Number(match[1]);
+    const model = match[2];
+    setLoading(true);
+    setResult(null);
+    try {
+      const { data } = await axios.get(`/api/dev/fake-device/${model}/dashboard?address=${address}&style=${style}`);
+      if (data.error) {
+        setResult({ success: false, error: data.error });
+      } else {
+        setDashboardYaml(data.yaml);
+        setDashboardModel(data.model || model);
+        setYamlCopied(false);
+      }
+    } catch (err: any) {
+      setResult({ success: false, error: err.response?.data?.error || String(err) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCopyYaml = async () => {
+    if (!dashboardYaml) return;
+    try {
+      await navigator.clipboard.writeText(dashboardYaml);
+      setYamlCopied(true);
+      setTimeout(() => setYamlCopied(false), 2000);
+    } catch {
+      // Fallback: select textarea content
+      const textarea = document.getElementById('dashboard-yaml-textarea') as HTMLTextAreaElement;
+      if (textarea) {
+        textarea.select();
+        document.execCommand('copy');
+        setYamlCopied(true);
+        setTimeout(() => setYamlCopied(false), 2000);
+      }
+    }
+  };
+
   // Show warning if Modbus is not configured
   if (config && !config.configured) {
     return (
@@ -271,7 +433,7 @@ export default function ModbusHelper() {
   }
 
   return (
-    <div>
+    <><div>
 
       {/* Suspended banner */}
       {suspended && (
@@ -313,6 +475,14 @@ export default function ModbusHelper() {
         >
           <FaPlus className="mr-2" /> {t('modbus_helper.creator')}
         </button>
+        {showSimulator && (
+          <button
+            className={`tab ${activeTab === 'simulator' ? 'tab-active' : ''}`}
+            onClick={() => setActiveTab('simulator')}
+          >
+            <FaFlask className="mr-2" /> {t('modbus_helper.simulator')}
+          </button>
+        )}
       </div>
 
       {/* GET Tab */}
@@ -400,62 +570,162 @@ export default function ModbusHelper() {
       {activeTab === 'set' && (
         <div className="card bg-base-200 mb-6">
           <div className="card-body">
-            <h2 className="card-title text-lg">{t('modbus_helper.write_register')}</h2>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Device Address */}
-              <div className="form-control">
-                <label className="label">
-                  <span className="label-text">{t('modbus_helper.address')}</span>
-                </label>
-                <input
-                  type="number"
-                  className="input input-bordered"
-                  value={address}
-                  onChange={(e) => setAddress(parseInt(e.target.value) || 1)}
-                  min={1}
-                  max={247}
-                />
-              </div>
-
-              {/* Register Address */}
-              <div className="form-control">
-                <label className="label">
-                  <span className="label-text">{t('modbus_helper.register_address')}</span>
-                </label>
-                <input
-                  type="number"
-                  className="input input-bordered"
-                  value={writeRegisterAddress}
-                  onChange={(e) => setWriteRegisterAddress(parseInt(e.target.value) || 0)}
-                  min={0}
-                />
-              </div>
-
-              {/* Value */}
-              <div className="form-control">
-                <label className="label">
-                  <span className="label-text">{t('modbus_helper.custom_value')}</span>
-                </label>
-                <input
-                  type="number"
-                  className="input input-bordered"
-                  value={writeValue}
-                  onChange={(e) => setWriteValue(e.target.value ? parseFloat(e.target.value) : '')}
-                  placeholder="Value to write"
-                />
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h2 className="card-title text-lg">{t('modbus_helper.write_register')}</h2>
+              {/* FC06 / FC16 toggle */}
+              <div className="flex gap-1 bg-base-300 rounded-lg p-1">
+                <button
+                  className={`btn btn-sm ${writeMode === 'fc06' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setWriteMode('fc06')}
+                >
+                  FC06 – {t('modbus_helper.fc06_single')}
+                </button>
+                <button
+                  className={`btn btn-sm ${writeMode === 'fc16' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setWriteMode('fc16')}
+                >
+                  FC16 – {t('modbus_helper.fc16_multiple')}
+                </button>
               </div>
             </div>
 
-            <div className="card-actions justify-end mt-4">
-              <button
-                className={`btn btn-warning ${loading ? 'loading' : ''}`}
-                onClick={handleSet}
-                disabled={loading || writeValue === ''}
-              >
-                <FaCog className="mr-2" /> {t('modbus_helper.write')}
-              </button>
-            </div>
+            {/* FC06 – single register */}
+            {writeMode === 'fc06' && (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                  {/* Device Address */}
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">{t('modbus_helper.address')}</span>
+                    </label>
+                    <input
+                      type="number"
+                      className="input input-bordered"
+                      value={address}
+                      onChange={(e) => setAddress(parseInt(e.target.value) || 1)}
+                      min={1}
+                      max={247}
+                    />
+                  </div>
+
+                  {/* Register Address */}
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">{t('modbus_helper.register_address')}</span>
+                    </label>
+                    <input
+                      type="number"
+                      className="input input-bordered"
+                      value={writeRegisterAddress}
+                      onChange={(e) => setWriteRegisterAddress(parseInt(e.target.value) || 0)}
+                      min={0}
+                    />
+                  </div>
+
+                  {/* Value */}
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">{t('modbus_helper.custom_value')}</span>
+                    </label>
+                    <input
+                      type="number"
+                      className="input input-bordered"
+                      value={writeValue}
+                      onChange={(e) => setWriteValue(e.target.value ? parseFloat(e.target.value) : '')}
+                      placeholder={t('modbus_helper.fc06_value_placeholder')}
+                    />
+                  </div>
+                </div>
+
+                <div className="card-actions justify-end mt-4">
+                  <button
+                    className={`btn btn-warning ${loading ? 'loading' : ''}`}
+                    onClick={handleSet}
+                    disabled={loading || writeValue === ''}
+                  >
+                    <FaCog className="mr-2" /> {t('modbus_helper.write')}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* FC16 – multiple registers */}
+            {writeMode === 'fc16' && (
+              <>
+                <p className="text-sm text-base-content/70 mt-2">
+                  {t('modbus_helper.fc16_hint')}
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                  {/* Device Address */}
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text">{t('modbus_helper.address')}</span>
+                    </label>
+                    <input
+                      type="number"
+                      className="input input-bordered"
+                      value={address}
+                      onChange={(e) => setAddress(parseInt(e.target.value) || 1)}
+                      min={1}
+                      max={247}
+                    />
+                  </div>
+
+                  {/* Starting Register Address */}
+                  <div className="form-control md:col-span-2">
+                    <label className="label">
+                      <span className="label-text">{t('modbus_helper.fc16_start_register')}</span>
+                    </label>
+                    <input
+                      type="number"
+                      className="input input-bordered"
+                      value={writeRegisterAddress}
+                      onChange={(e) => setWriteRegisterAddress(parseInt(e.target.value) || 0)}
+                      min={0}
+                    />
+                  </div>
+                </div>
+
+                {/* Values (comma-separated) */}
+                <div className="form-control mt-4">
+                  <label className="label">
+                    <span className="label-text">{t('modbus_helper.fc16_values')}</span>
+                    <span className="label-text-alt">{t('modbus_helper.fc16_values_hint')}</span>
+                  </label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    value={writeMultipleValues}
+                    onChange={(e) => setWriteMultipleValues(e.target.value)}
+                    placeholder={t('modbus_helper.fc16_values_placeholder')}
+                  />
+                  {writeMultipleValues && parseMultipleValues(writeMultipleValues) && (
+                    <label className="label">
+                      <span className="label-text-alt text-info">
+                        {t('modbus_helper.fc16_registers_count')}: {parseMultipleValues(writeMultipleValues)!.length}
+                      </span>
+                    </label>
+                  )}
+                  {writeMultipleValues && !parseMultipleValues(writeMultipleValues) && (
+                    <label className="label">
+                      <span className="label-text-alt text-error">
+                        {t('modbus_helper.fc16_invalid_values')}
+                      </span>
+                    </label>
+                  )}
+                </div>
+
+                <div className="card-actions justify-end mt-4">
+                  <button
+                    className={`btn btn-warning ${loading ? 'loading' : ''}`}
+                    onClick={handleSetMultiple}
+                    disabled={loading || !parseMultipleValues(writeMultipleValues)}
+                  >
+                    <FaCog className="mr-2" /> {t('modbus_helper.fc16_write_button')}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -936,13 +1206,181 @@ export default function ModbusHelper() {
         </div>
       )}
 
+      {/* SIMULATOR Tab */}
+      {activeTab === 'simulator' && showSimulator && (
+        <div className="space-y-4">
+          {/* Create form card */}
+          <div className="card bg-base-200 shadow-sm">
+            <div className="card-body p-4 sm:p-6">
+              <h2 className="card-title text-base sm:text-lg flex items-center gap-2">
+                <FaFlask className="text-primary shrink-0" /> {t('modbus_helper.simulator_title')}
+              </h2>
+              <p className="text-xs sm:text-sm text-base-content/70 mt-1">
+                {t('modbus_helper.simulator_hint')}
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_6rem_auto] gap-4 mt-4">
+                {/* Select Model */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-xs font-semibold">{t('modbus_wizard.step2_title')}</span>
+                  </label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={selectedSimModel}
+                    onChange={(e) => setSelectedSimModel(e.target.value)}
+                  >
+                    {Object.values(MODBUS_DEVICE_CATALOG).map(d => (
+                      <option key={d.modelKey} value={d.modelKey}>
+                        {d.displayName} ({d.manufacturer})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Address */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-xs font-semibold">{t('modbus_wizard.address')}</span>
+                  </label>
+                  <input
+                    type="number"
+                    className="input input-bordered w-full"
+                    value={simAddress}
+                    onChange={(e) => setSimAddress(parseInt(e.target.value) || 1)}
+                    min={1}
+                    max={247}
+                  />
+                </div>
+
+                {/* Action Button — aligned to bottom of the row */}
+                <div className="flex items-end">
+                  <button
+                    className={`btn btn-primary w-full md:w-auto whitespace-nowrap ${loading ? 'loading' : ''}`}
+                    onClick={handleCreateFakeDevice}
+                    disabled={loading}
+                  >
+                    <FaPlus className="mr-1.5" /> {t('modbus_helper.simulator_create')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Active Simulations — card per device */}
+          {Array.isArray(fakeDevices) && fakeDevices.length > 0 && (
+            <div>
+              <h3 className="font-bold text-sm sm:text-md mb-3 px-1">
+                {t('modbus_helper.active_simulations')}
+              </h3>
+              <div className="space-y-3">
+                {fakeDevices.map((dev) => (
+                  <div key={dev.device_id} className="card bg-base-200 shadow-sm">
+                    <div className="card-body p-4">
+                      {/* Top row: device info */}
+                      <div className="flex flex-wrap items-start gap-x-4 gap-y-1">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-sm sm:text-base truncate">{dev.model}</div>
+                          <div className="text-xs text-base-content/60">{dev.manufacturer}</div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="badge badge-outline badge-sm capitalize">{dev.category}</span>
+                          <span className="badge badge-ghost badge-sm font-mono">{dev.entity_count} entities</span>
+                        </div>
+                      </div>
+
+                      <div className="text-xs font-mono text-primary mt-1">ID: {dev.device_id}</div>
+
+                      {/* Action buttons — always visible, wrap on mobile */}
+                      <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-base-300">
+                        <button
+                          className="btn btn-sm btn-info flex-1 sm:flex-none min-w-0"
+                          onClick={() => handleUpdateFakeDevice(dev.device_id)}
+                          disabled={loading}
+                        >
+                          <FaPlay className="mr-1.5 shrink-0" />
+                          <span className="truncate">{t('modbus_helper.simulation_send_update')}</span>
+                        </button>
+                        <button
+                          className="btn btn-sm btn-accent flex-1 sm:flex-none min-w-0"
+                          onClick={() => handleDashboardYaml(dev.device_id)}
+                          disabled={loading}
+                        >
+                          <FaCode className="mr-1.5 shrink-0" />
+                          <span className="truncate">{t('modbus_helper.simulation_dashboard')}</span>
+                        </button>
+                        <button
+                          className="btn btn-sm btn-secondary flex-1 sm:flex-none min-w-0"
+                          onClick={() => handleDashboardYaml(dev.device_id, 'visual')}
+                          disabled={loading}
+                        >
+                          <FaImage className="mr-1.5 shrink-0" />
+                          <span className="truncate">{t('modbus_helper.simulation_visual')}</span>
+                        </button>
+                        <button
+                          className="btn btn-sm btn-error flex-1 sm:flex-none min-w-0"
+                          onClick={() => handleRemoveFakeDevice(dev.device_id)}
+                          disabled={loading}
+                        >
+                          {t('modbus_helper.simulation_delete')}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Loading indicator for other operations */}
-      {loading && (activeTab !== 'search' && activeTab !== 'creator' || !result?.total) && (
+      {loading && (activeTab !== 'search' && activeTab !== 'creator' && activeTab !== 'simulator' || !result?.total) && (
         <div className="flex justify-center items-center py-8">
           <span className="loading loading-spinner loading-lg"></span>
           <span className="ml-4">{t('modbus_helper.loading')}</span>
         </div>
       )}
     </div>
-  );
+
+    {/* Dashboard YAML Modal */}
+    {dashboardYaml && (
+      <dialog className="modal modal-open" onClick={(e) => { if (e.target === e.currentTarget) setDashboardYaml(null); }}>
+        <div className="modal-box max-w-4xl w-full">
+          <h3 className="font-bold text-lg mb-2">
+            <FaCode className="inline mr-2" />
+            {t('modbus_helper.simulation_dashboard_title', { model: dashboardModel })}
+          </h3>
+          <p className="text-sm text-base-content/70 mb-4">
+            {t('modbus_helper.simulation_dashboard_hint')}
+          </p>
+          <textarea
+            id="dashboard-yaml-textarea"
+            className="textarea textarea-bordered w-full font-mono text-xs leading-relaxed"
+            rows={20}
+            readOnly
+            value={dashboardYaml}
+          />
+          <div className="modal-action">
+            <button
+              className={`btn ${yamlCopied ? 'btn-success' : 'btn-primary'}`}
+              onClick={handleCopyYaml}
+            >
+              {yamlCopied ? (
+                <><FaCheck className="mr-2" /> {t('modbus_helper.simulation_dashboard_copied')}</>
+              ) : (
+                <><FaCopy className="mr-2" /> {t('modbus_helper.simulation_dashboard_copy')}</>
+              )}
+            </button>
+            <button
+              className="btn"
+              onClick={() => setDashboardYaml(null)}
+            >
+              {t('modbus_helper.simulation_dashboard_close')}
+            </button>
+          </div>
+        </div>
+      </dialog>
+    )}
+  </>);
 }

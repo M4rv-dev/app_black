@@ -50,6 +50,8 @@ from boneio.webui.routes import (
     can_router,
     config_router,
     covers_router,
+    dashboard_router,
+    dev_fake_device_router,
     irrigation_router,
     migrations_router,
     modbus_router,
@@ -141,6 +143,7 @@ def get_config_helper():
 app.include_router(auth_router)
 app.include_router(outputs_router)
 app.include_router(covers_router)
+app.include_router(dashboard_router)
 app.include_router(irrigation_router)
 app.include_router(system_router)
 app.include_router(config_router)
@@ -154,6 +157,8 @@ app.include_router(templates_router)
 app.include_router(tools_router)
 app.include_router(migrations_router)
 
+app.include_router(dev_fake_device_router)
+
 # Extension modules — auto-discovered via ModuleRegistry (boneio/modules/_registry.py).
 # To add a new module: implement register_routes(app) in its __init__.py or
 # manager_integration.py, then call ModuleRegistry.get().register(module).
@@ -163,6 +168,7 @@ ModuleRegistry.get().register_routes(app)
 
 # Override get_manager dependency in routers using FastAPI dependency_overrides
 from boneio.webui.routes import covers as covers_module
+from boneio.webui.routes import dashboard as dashboard_module
 from boneio.webui.routes import irrigation as irrigation_module
 from boneio.webui.routes import migrations as migrations_module
 from boneio.webui.routes import modbus as modbus_module
@@ -176,6 +182,7 @@ from boneio.webui.routes import update as update_module
 # Use dependency_overrides to replace the placeholder get_manager functions
 app.dependency_overrides[outputs_module.get_manager] = get_manager
 app.dependency_overrides[covers_module.get_manager] = get_manager
+app.dependency_overrides[dashboard_module.get_manager] = get_manager
 app.dependency_overrides[irrigation_module.get_manager] = get_manager
 app.dependency_overrides[modbus_module.get_manager] = get_manager
 app.dependency_overrides[sensors_module.get_manager] = get_manager
@@ -184,6 +191,10 @@ app.dependency_overrides[update_module.get_manager] = get_manager
 app.dependency_overrides[migrations_module._get_manager] = get_manager
 app.dependency_overrides[templates_module.get_manager] = get_manager
 app.dependency_overrides[tools_module.get_manager] = get_manager
+
+from boneio.webui.routes import dev_fake_device as dev_fake_device_module
+app.dependency_overrides[dev_fake_device_module.get_manager] = get_manager
+
 system_module.set_config_helper_getter(get_config_helper)
 
 
@@ -502,6 +513,23 @@ async def send_initial_states(
                     return False
             except Exception as e:
                 _LOGGER.error(f"Error preparing ADC sensor state: {type(e).__name__} - {e}")
+
+        # Send system sensor states (CPU, disk, memory)
+        for sensor in boneio_manager.sensors.get_system_sensors():
+            try:
+                sensor_state = SensorState(
+                    id=sensor.id,
+                    name=sensor.name,
+                    state=sensor.state,
+                    unit=sensor.unit_of_measurement,
+                    timestamp=sensor.last_timestamp,
+                    attributes=sensor._attributes if hasattr(sensor, "_attributes") and sensor._attributes else None,
+                )
+                update = SensorEvent(entity_id=sensor.id, state=sensor_state)
+                if not await send_state_update(update):
+                    return False
+            except Exception as e:
+                _LOGGER.error(f"Error preparing system sensor state: {type(e).__name__} - {e}")
 
         # Send virtual energy sensor states
         for ve_sensor in boneio_manager.sensors.get_virtual_energy_sensors():

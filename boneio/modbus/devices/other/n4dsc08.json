@@ -1,5 +1,10 @@
 {
-  "model": "N4DSC08",
+  "model": "N4DSC08 Relay",
+  "manufacturer": "N4",
+  "description": "N4DSC08 8-channel Modbus relay board",
+  "category": "other",
+  "default_address": 1,
+  "default_update_interval": "30s",
   "registers_base": [
     {
       "base": 0,

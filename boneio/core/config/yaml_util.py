@@ -77,6 +77,32 @@ def _apply_module_schema_extensions(schema: dict) -> dict:
     return schema
 
 
+def _get_modbus_device_models() -> list[str]:
+    """Scan modbus/devices/ directory and return filenames as model keys.
+
+    Only does os.walk (no JSON parsing) — <1ms even on BeagleBone.
+    """
+    devices_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "../../modbus/devices"))
+    models = []
+    if os.path.isdir(devices_dir):
+        for root, dirs, files in os.walk(devices_dir):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for fname in files:
+                if fname.endswith(".json"):
+                    models.append(fname[:-5])
+    return sorted(models)
+
+
+def _inject_modbus_models(schema: dict) -> None:
+    """Dynamically set allowed modbus model values from device files."""
+    try:
+        model_field = schema["modbus_devices"]["schema"]["schema"]["model"]
+        model_field["allowed"] = _get_modbus_device_models()
+        _LOGGER.debug("Injected %d modbus models into schema", len(model_field["allowed"]))
+    except (KeyError, TypeError):
+        _LOGGER.warning("Could not inject modbus models into schema")
+
+
 def _get_schema():
     """Get schema from cache or load it if not cached.
 
@@ -87,7 +113,9 @@ def _get_schema():
     if _SCHEMA_CACHE is None:
         _LOGGER.debug("Loading schema from file (first time)")
         schema = load_yaml_file(schema_file)
-        _SCHEMA_CACHE = _apply_module_schema_extensions(schema)
+        schema = _apply_module_schema_extensions(schema)
+        _inject_modbus_models(schema)
+        _SCHEMA_CACHE = schema
     return _SCHEMA_CACHE
 
 
@@ -710,29 +738,14 @@ class CustomValidator(Validator):
             raise ValueError(f"Could not parse power value: {value}")
         num = float(match.group(1))
         unit = match.group(2) or "w"
-        if unit in ("w", ""):
+        if unit in ("w", "", "wh"):
             multiplier = 1.0
-        elif unit == "kw":
+        elif unit in ("kw", "kwh"):
             multiplier = 1000.0
-        elif unit == "mw":
+        elif unit in ("mw", "mwh"):
             multiplier = 1_000_000.0
-        elif unit == "gw":
+        elif unit in ("gw", "gwh"):
             multiplier = 1_000_000_000.0
-        elif unit == "mw":
-            multiplier = 1_000_000.0
-        elif unit == "kwh":
-            # 1 kWh = 1000 W (for 1h). For config, treat as 1000W average.
-            multiplier = 1000.0
-        elif unit == "mwh":
-            multiplier = 1_000_000.0
-        elif unit == "gwh":
-            multiplier = 1_000_000_000.0
-        elif unit == "mw":
-            multiplier = 1_000_000.0
-        elif unit == "wh":
-            multiplier = 1.0
-        elif unit == "mw" or unit == "mw" or unit == "mw" or unit == "mw" or unit == "mw" or unit == "mw":
-            multiplier = 1_000_000.0
         else:
             _LOGGER.warning(f"Unknown unit for power value: {unit}")
             raise ValueError(f"Unknown unit for power value: {unit}")
@@ -952,7 +965,7 @@ def _try_load_cached_config(config_file: str) -> dict | None:
             _LOGGER.debug("Schema file changed, cache invalidated")
             return None
 
-        _LOGGER.info("Loading validated config from cache (skipping Cerberus validation)")
+        _LOGGER.debug("Loading validated config from cache (skipping Cerberus validation)")
         return cached["data"]
     except (FileNotFoundError, pickle.UnpicklingError, OSError, EOFError) as e:
         _LOGGER.debug("Config cache not available: %s", e)
@@ -1175,6 +1188,9 @@ def strip_default_values(data: Any, schema: dict | None = None, section: str | N
         """Remove keys with default values from dict."""
         cleaned = {}
         for key, value in obj.items():
+            # Skip empty strings and None values — they are never valid config
+            if value is None or value == "":
+                continue
             # Special handling for nested structures
             if key == "actions" and isinstance(value, dict):
                 # Clean actions recursively

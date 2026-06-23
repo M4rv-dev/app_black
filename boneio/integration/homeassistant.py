@@ -283,11 +283,17 @@ def ha_button_availabilty_message(
     return msg
 
 
-def _ha_irrigation_device(ctrl_id: str, ctrl_name: str, config_helper: ConfigHelper) -> dict[str, Any]:
+def _ha_irrigation_device(
+    ctrl_id: str,
+    ctrl_name: str,
+    config_helper: ConfigHelper,
+    area: str | None = None,
+    area_name: str | None = None,
+) -> dict[str, Any]:
     """Create HA child-device metadata for one irrigation controller."""
     topic = config_helper.topic_prefix
     model = f"boneIO Black {config_helper.device_type.title().replace('X', 'x')}"
-    return {
+    device: dict[str, Any] = {
         "identifiers": [f"{topic}_{IRRIGATION}_{ctrl_id}"],
         "manufacturer": "boneIO",
         "model": model,
@@ -297,6 +303,9 @@ def _ha_irrigation_device(ctrl_id: str, ctrl_name: str, config_helper: ConfigHel
         "sw_version": __version__,
         "via_device": topic,
     }
+    if area_name:
+        device["suggested_area"] = area_name
+    return device
 
 
 def ha_irrigation_main_switch_message(
@@ -397,12 +406,54 @@ def ha_irrigation_button_message(
     return msg
 
 
+def ha_irrigation_valve_message(
+    ctrl_id: str,
+    ctrl_name: str,
+    suffix: str,
+    name: str,
+    config_helper: ConfigHelper,
+) -> dict[str, Any]:
+    """Create valve discovery for irrigation zone.
+
+    Irrigation zones represent physical valves, so they use the HA ``valve``
+    entity type with open/close semantics instead of ``switch`` on/off.
+
+    Args:
+        ctrl_id: Controller ID.
+        ctrl_name: Controller display name.
+        suffix: Topic suffix (e.g. ``zone/altana``).
+        name: Entity display name.
+        config_helper: Config helper for topic prefix and device info.
+
+    Returns:
+        HA discovery payload dict for a valve entity.
+    """
+    topic = config_helper.topic_prefix
+    msg = ha_valve_availabilty_message(
+        id=f"irrigation_{ctrl_id}_{suffix.replace('/', '_')}",
+        name=name,
+        config_helper=config_helper,
+        device_type=IRRIGATION,
+    )
+    msg["device"] = _ha_irrigation_device(ctrl_id, ctrl_name, config_helper)
+    msg["state_topic"] = f"{topic}/{IRRIGATION}/{ctrl_id}/{suffix}"
+    msg["command_topic"] = f"{topic}/cmd/{IRRIGATION}/{ctrl_id}/{suffix}/set"
+    msg["value_template"] = "{{ value_json.state }}"
+    msg["json_attributes_topic"] = f"{topic}/{IRRIGATION}/{ctrl_id}/{suffix}"
+    msg["json_attributes_template"] = (
+        "{{ value_json | tojson }}"
+    )
+    msg["icon"] = "mdi:sprinkler-variant"
+    return msg
+
+
 def ha_irrigation_timestamp_sensor_message(
     ctrl_id: str,
     ctrl_name: str,
     suffix: str,
     name: str,
     config_helper: ConfigHelper,
+    icon: str = "mdi:timer-sand",
 ) -> dict[str, Any]:
     """Create timestamp sensor discovery for irrigation countdown.
 
@@ -420,7 +471,7 @@ def ha_irrigation_timestamp_sensor_message(
     msg["state_topic"] = f"{topic}/{IRRIGATION}/{ctrl_id}/{suffix}"
     msg["value_template"] = "{{ value_json.value }}"
     msg["device_class"] = "timestamp"
-    msg["icon"] = "mdi:timer-sand"
+    msg["icon"] = icon
     return msg
 
 
@@ -455,6 +506,53 @@ def ha_irrigation_select_message(
     msg["value_template"] = "{{ value_json.value }}"
     msg["options"] = options
     msg["icon"] = "mdi:water-pump"
+    return msg
+
+
+def ha_irrigation_event_message(
+    ctrl_id: str,
+    ctrl_name: str,
+    config_helper: ConfigHelper,
+) -> dict[str, Any]:
+    """Create event entity discovery for irrigation controller notifications.
+
+    The event entity fires when notable events occur on the controller,
+    such as interlock faults, cycle completions, or standby blocks.
+    Home Assistant automations can listen to these events and trigger
+    notifications (e.g. mobile push, Telegram, email).
+
+    Event types:
+        - interlock_fault: Output blocked by interlock group.
+        - cycle_complete: Full irrigation cycle finished.
+        - standby_blocked: Start attempt blocked by standby mode.
+
+    Each event payload contains ``event_type`` and additional attributes
+    like ``zone``, ``source``, and ``message``.
+
+    Args:
+        ctrl_id: Controller ID.
+        ctrl_name: Controller display name.
+        config_helper: Config helper for topic prefix and device info.
+
+    Returns:
+        HA discovery payload dict for an event entity.
+    """
+    topic = config_helper.topic_prefix
+    msg = ha_availabilty_message(
+        device_type=IRRIGATION,
+        config_helper=config_helper,
+        entity_type="event",
+        id=f"irrigation_{ctrl_id}_event",
+        name=f"{ctrl_name} Event",
+    )
+    msg["device"] = _ha_irrigation_device(ctrl_id, ctrl_name, config_helper)
+    msg["state_topic"] = f"{topic}/{IRRIGATION}/{ctrl_id}/event"
+    msg["event_types"] = [
+        "interlock_fault",
+        "cycle_complete",
+        "standby_blocked",
+    ]
+    msg["icon"] = "mdi:message-alert"
     return msg
 
 
@@ -678,7 +776,10 @@ def ha_sensor_system_availabilty_message(
     **kwargs
 ):
     """Create availability topic for system sensors (disk, memory, CPU).
-    
+
+    Includes json_attributes_topic so HA picks up extra attributes
+    (e.g. disk_total_gb, memory_used_gb) from the same state topic.
+
     Args:
         id: Sensor ID
         name: Sensor name
@@ -687,7 +788,7 @@ def ha_sensor_system_availabilty_message(
         device_class: HA device class (optional)
         icon: MDI icon (optional)
         **kwargs: Additional fields
-        
+
     Returns:
         HA discovery message dict
     """
@@ -703,12 +804,19 @@ def ha_sensor_system_availabilty_message(
     msg["state_class"] = "measurement"
     msg["value_template"] = "{{ value_json.state }}"
     msg["entity_category"] = "diagnostic"
-    
+
+    # Expose extra attributes (e.g. disk_total_gb, memory_available_gb)
+    state_topic = msg.get("state_topic", f"{config_helper.topic_prefix}/{SENSOR}/{id}")
+    msg["json_attributes_topic"] = state_topic
+    msg["json_attributes_template"] = (
+        "{{ value_json | tojson }}"
+    )
+
     if device_class:
         msg["device_class"] = device_class
     if icon:
         msg["icon"] = icon
-        
+
     return msg
 
 

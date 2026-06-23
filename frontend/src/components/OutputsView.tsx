@@ -217,7 +217,7 @@ export default function OutputsView({error}: {error: string | null}) {
   const [longPressDialog, setLongPressDialog] = useState<{ 
     open: boolean; 
     output: OutputState | CoverState | null;
-    type: 'output' | 'output_group' | 'cover';
+    type: 'output' | 'output_group' | 'cover' | 'remote_outputs';
   }>({
     open: false,
     output: null,
@@ -234,6 +234,10 @@ export default function OutputsView({error}: {error: string | null}) {
 
   const handleCoverLongPress = useCallback((cover: CoverState) => {
     setLongPressDialog({ open: true, output: cover, type: 'cover' });
+  }, []);
+
+  const handleRemoteOutputLongPress = useCallback((output: OutputState) => {
+    setLongPressDialog({ open: true, output, type: 'remote_outputs' });
   }, []);
 
   const handleGoToSettings = useCallback(() => {
@@ -553,7 +557,7 @@ export default function OutputsView({error}: {error: string | null}) {
                     isGrid={isGrid}
                     error={error}
                     isHighlighted={recentlyChanged.has(output.id)}
-                    onLongPress={handleLongPress}
+                    onLongPress={handleRemoteOutputLongPress}
                   />
                 ))}
               </div>

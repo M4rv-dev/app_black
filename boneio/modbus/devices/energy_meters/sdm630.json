@@ -1,5 +1,10 @@
 {
   "model": "SDM630",
+  "manufacturer": "Eastron",
+  "description": "Eastron SDM630 3-phase energy meter",
+  "category": "energy_meters",
+  "default_address": 1,
+  "default_update_interval": "10s",
   "registers_base": [
     {
       "base": 0,

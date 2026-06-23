@@ -10,12 +10,15 @@ from boneio.components.irrigation import IrrigationController, IrrigationZone, W
 from boneio.const import NEXT_VALVE, ON, PAUSE, RESUME
 from boneio.core.utils.timeperiod import parse_time_to_seconds
 from boneio.integration.homeassistant import (
+    _ha_irrigation_device,
     ha_irrigation_button_message,
+    ha_irrigation_event_message,
     ha_irrigation_main_switch_message,
     ha_irrigation_number_message,
     ha_irrigation_select_message,
     ha_irrigation_switch_message,
     ha_irrigation_timestamp_sensor_message,
+    ha_irrigation_valve_message,
 )
 
 if TYPE_CHECKING:
@@ -90,6 +93,8 @@ class IrrigationManager:
             repeat=int(cfg.get("repeat", 0)),
             auto_advance=bool(cfg.get("auto_advance", True)),
             reverse=bool(cfg.get("reverse", False)),
+            pause_timeout_s=int(parse_time_to_seconds(cfg.get("pause_timeout"), 1800)),
+            area_id=cfg.get("area"),
         )
 
     def _build_zone(self, zone_cfg: dict[str, Any]) -> IrrigationZone | None:
@@ -171,9 +176,47 @@ class IrrigationManager:
             self._publish_discovery(ctrl)
 
     async def start(self) -> None:
+        """Start irrigation controllers — called once on first MQTT connection.
+
+        Subscribes MQTT command topics, starts schedule tasks, and publishes
+        initial states.
+        """
         for ctrl in self._controllers.values():
             await self._subscribe_controller(ctrl)
             ctrl.start_schedules()
+            await ctrl.publish_all_states()
+            _LOGGER.info(
+                "Irrigation controller '%s' started with %d schedule(s), %d zone(s)",
+                ctrl.id,
+                len(ctrl._schedule),
+                len(ctrl.zones),
+            )
+
+    async def reconnect(self) -> None:
+        """Handle MQTT (re-)connect — re-subscribe topics and re-publish states.
+
+        On **first connection** (no schedule tasks running yet), schedule tasks
+        are started for each controller.  On subsequent MQTT reconnects the
+        existing schedule tasks are left untouched — they are long-lived
+        ``asyncio.Task``s that sleep until the next fire time.  Restarting
+        them would cancel the pending sleep and recalculate the next fire time
+        from "now", potentially skipping a schedule that was about to fire.
+        """
+        # Detect first connection: if any controller has no schedule tasks yet,
+        # we treat this as the initial start.
+        first_connect = any(
+            ctrl._schedule and not ctrl._schedule_tasks
+            for ctrl in self._controllers.values()
+        )
+        if first_connect:
+            _LOGGER.info("Irrigation: first MQTT connection — starting schedule tasks")
+        else:
+            _LOGGER.info("Irrigation MQTT reconnect: re-subscribing topics and re-publishing states")
+
+        for ctrl in self._controllers.values():
+            await self._subscribe_controller(ctrl)
+            if first_connect and ctrl._schedule and not ctrl._schedule_tasks:
+                ctrl.start_schedules()
             await ctrl.publish_all_states()
 
     async def stop(self) -> None:
@@ -183,7 +226,7 @@ class IrrigationManager:
         self._subscribed_topics.clear()
 
         for ctrl in self._controllers.values():
-            await ctrl.shutdown()
+            await ctrl.full_stop()
 
     async def reload_irrigation(self) -> None:
         """Reload irrigation configuration from file.
@@ -213,7 +256,7 @@ class IrrigationManager:
             ctrl = self._controllers[ctrl_id]
             _LOGGER.info("Removing irrigation controller '%s'", ctrl_id)
             ctrl.stop_schedules()
-            await ctrl.shutdown()
+            await ctrl.full_stop()
             # Remove HA discovery for this controller
             self._remove_discovery(ctrl)
             del self._controllers[ctrl_id]
@@ -228,7 +271,7 @@ class IrrigationManager:
             if ctrl_id in self._controllers:
                 old_ctrl = self._controllers[ctrl_id]
                 old_ctrl.stop_schedules()
-                await old_ctrl.shutdown()
+                await old_ctrl.full_stop()
                 del self._controllers[ctrl_id]
 
             # Build new controller
@@ -271,18 +314,23 @@ class IrrigationManager:
         # Build list of discovery IDs to remove
         discovery_ids: list[tuple[str, str]] = [
             (f"{ctrl.id}", "switch"),
-            (f"{ctrl.id}_auto_advance", "switch"),
-            (f"{ctrl.id}_reverse", "switch"),
             (f"{ctrl.id}_skip_next_run", "switch"),
             (f"{ctrl.id}_standby", "switch"),
             (f"{ctrl.id}_multiplier", "number"),
             (f"{ctrl.id}_repeat", "number"),
-            (f"{ctrl.id}_next_valve", "button"),
             (f"{ctrl.id}_pause", "button"),
             (f"{ctrl.id}_resume", "button"),
+            (f"{ctrl.id}_event", "event"),
         ]
+        # Multi-zone-only entities
+        if len(ctrl.zones) > 1:
+            discovery_ids.extend([
+                (f"{ctrl.id}_auto_advance", "switch"),
+                (f"{ctrl.id}_reverse", "switch"),
+                (f"{ctrl.id}_next_valve", "button"),
+            ])
         for zone in ctrl.zones:
-            discovery_ids.append((f"{ctrl.id}_zone_{zone.id}", "switch"))
+            discovery_ids.append((f"{ctrl.id}_zone_{zone.id}", "valve"))
             discovery_ids.append((f"{ctrl.id}_zone_{zone.id}_enabled", "switch"))
             discovery_ids.append((f"{ctrl.id}_zone_{zone.id}_duration", "number"))
         for idx in range(len(ctrl._schedule)):
@@ -332,8 +380,10 @@ class IrrigationManager:
         async def handle_standby(_topic: str, payload: str, _ctrl: IrrigationController = ctrl) -> None:
             await _ctrl.set_standby(payload.strip().upper() == ON)
 
-        await self._subscribe_topic(ctrl._setting_cmd_topic("auto_advance"), handle_auto_advance)
-        await self._subscribe_topic(ctrl._setting_cmd_topic("reverse"), handle_reverse)
+        # Subscribe multi-zone-only MQTT handlers
+        if len(ctrl.zones) > 1:
+            await self._subscribe_topic(ctrl._setting_cmd_topic("auto_advance"), handle_auto_advance)
+            await self._subscribe_topic(ctrl._setting_cmd_topic("reverse"), handle_reverse)
         await self._subscribe_topic(ctrl._setting_cmd_topic("multiplier"), handle_multiplier)
         await self._subscribe_topic(ctrl._setting_cmd_topic("repeat"), handle_repeat)
         await self._subscribe_topic(ctrl._setting_cmd_topic("skip_next_run"), handle_skip_next)
@@ -379,38 +429,49 @@ class IrrigationManager:
 
     def _publish_discovery(self, ctrl: IrrigationController) -> None:
         cfg = self._manager.config_helper
+        # Resolve area name for HA suggested_area
+        area_name = cfg.get_area_name(ctrl.area_id) if ctrl.area_id else None
+        device = _ha_irrigation_device(ctrl.id, ctrl.name, cfg, area=ctrl.area_id, area_name=area_name)
 
-        self._manager.publish_ha_discovery(
+        def _pub(id: str, ha_type: str, payload: dict | str) -> None:
+            """Publish discovery with area-enriched device info."""
+            if isinstance(payload, dict) and "device" in payload:
+                payload["device"] = device
+            self._manager.publish_ha_discovery(id=id, ha_type=ha_type, payload=payload)
+
+        _pub(
             id=f"{ctrl.id}",
             ha_type="switch",
             payload=ha_irrigation_main_switch_message(ctrl.id, ctrl.name, cfg),
         )
 
-        self._manager.publish_ha_discovery(
-            id=f"{ctrl.id}_auto_advance",
-            ha_type="switch",
-            payload=ha_irrigation_switch_message(
-                ctrl.id,
-                ctrl.name,
-                suffix="auto_advance",
-                name=f"{ctrl.name} Auto Advance",
-                config_helper=cfg,
-            ),
-        )
+        # Multi-zone-only switches: auto_advance, reverse
+        if len(ctrl.zones) > 1:
+            _pub(
+                id=f"{ctrl.id}_auto_advance",
+                ha_type="switch",
+                payload=ha_irrigation_switch_message(
+                    ctrl.id,
+                    ctrl.name,
+                    suffix="auto_advance",
+                    name=f"{ctrl.name} Auto Advance",
+                    config_helper=cfg,
+                ),
+            )
 
-        self._manager.publish_ha_discovery(
-            id=f"{ctrl.id}_reverse",
-            ha_type="switch",
-            payload=ha_irrigation_switch_message(
-                ctrl.id,
-                ctrl.name,
-                suffix="reverse",
-                name=f"{ctrl.name} Reverse",
-                config_helper=cfg,
-            ),
-        )
+            _pub(
+                id=f"{ctrl.id}_reverse",
+                ha_type="switch",
+                payload=ha_irrigation_switch_message(
+                    ctrl.id,
+                    ctrl.name,
+                    suffix="reverse",
+                    name=f"{ctrl.name} Reverse",
+                    config_helper=cfg,
+                ),
+            )
 
-        self._manager.publish_ha_discovery(
+        _pub(
             id=f"{ctrl.id}_skip_next_run",
             ha_type="switch",
             payload=ha_irrigation_switch_message(
@@ -422,7 +483,7 @@ class IrrigationManager:
             ),
         )
 
-        self._manager.publish_ha_discovery(
+        _pub(
             id=f"{ctrl.id}_standby",
             ha_type="switch",
             payload=ha_irrigation_switch_message(
@@ -434,7 +495,7 @@ class IrrigationManager:
             ),
         )
 
-        self._manager.publish_ha_discovery(
+        _pub(
             id=f"{ctrl.id}_multiplier",
             ha_type="number",
             payload=ha_irrigation_number_message(
@@ -450,7 +511,7 @@ class IrrigationManager:
             ),
         )
 
-        self._manager.publish_ha_discovery(
+        _pub(
             id=f"{ctrl.id}_repeat",
             ha_type="number",
             payload=ha_irrigation_number_message(
@@ -466,20 +527,22 @@ class IrrigationManager:
             ),
         )
 
-        self._manager.publish_ha_discovery(
-            id=f"{ctrl.id}_next_valve",
-            ha_type="button",
-            payload=ha_irrigation_button_message(
-                ctrl.id,
-                ctrl.name,
-                suffix="next_valve",
-                name=f"{ctrl.name} Next Valve",
-                payload_press=NEXT_VALVE,
-                config_helper=cfg,
-            ),
-        )
+        # Multi-zone-only button: next_valve
+        if len(ctrl.zones) > 1:
+            _pub(
+                id=f"{ctrl.id}_next_valve",
+                ha_type="button",
+                payload=ha_irrigation_button_message(
+                    ctrl.id,
+                    ctrl.name,
+                    suffix="next_valve",
+                    name=f"{ctrl.name} Next Valve",
+                    payload_press=NEXT_VALVE,
+                    config_helper=cfg,
+                ),
+            )
 
-        self._manager.publish_ha_discovery(
+        _pub(
             id=f"{ctrl.id}_pause",
             ha_type="button",
             payload=ha_irrigation_button_message(
@@ -492,7 +555,7 @@ class IrrigationManager:
             ),
         )
 
-        self._manager.publish_ha_discovery(
+        _pub(
             id=f"{ctrl.id}_resume",
             ha_type="button",
             payload=ha_irrigation_button_message(
@@ -506,10 +569,16 @@ class IrrigationManager:
         )
 
         for zone in ctrl.zones:
+            # Remove stale switch discovery (migration from switch → valve)
             self._manager.publish_ha_discovery(
                 id=f"{ctrl.id}_zone_{zone.id}",
                 ha_type="switch",
-                payload=ha_irrigation_switch_message(
+                payload="",
+            )
+            _pub(
+                id=f"{ctrl.id}_zone_{zone.id}",
+                ha_type="valve",
+                payload=ha_irrigation_valve_message(
                     ctrl.id,
                     ctrl.name,
                     suffix=f"zone/{zone.id}",
@@ -518,7 +587,7 @@ class IrrigationManager:
                 ),
             )
 
-            self._manager.publish_ha_discovery(
+            _pub(
                 id=f"{ctrl.id}_zone_{zone.id}_enabled",
                 ha_type="switch",
                 payload=ha_irrigation_switch_message(
@@ -530,7 +599,11 @@ class IrrigationManager:
                 ),
             )
 
-            self._manager.publish_ha_discovery(
+            # Duration max: configured time + 20min, clamped to [30, 120]
+            zone_duration_min = max(1, round(zone.run_duration / 60))
+            duration_max = min(120, max(30, zone_duration_min + 20))
+
+            _pub(
                 id=f"{ctrl.id}_zone_{zone.id}_duration",
                 ha_type="number",
                 payload=ha_irrigation_number_message(
@@ -539,15 +612,23 @@ class IrrigationManager:
                     suffix=f"zone/{zone.id}/duration",
                     name=f"{ctrl.name} {zone.name} Duration",
                     min_val=1,
-                    max_val=1440,
+                    max_val=duration_max,
                     step=1,
                     unit="min",
                     config_helper=cfg,
                 ),
             )
 
+            # Remove stale per-zone next_run sensor (migrated to valve attributes)
+            if zone.run_every_n > 1:
+                self._manager.publish_ha_discovery(
+                    id=f"{ctrl.id}_zone_{zone.id}_next_run",
+                    ha_type="sensor",
+                    payload="",
+                )
+
         for idx, _schedule in enumerate(ctrl._schedule):
-            self._manager.publish_ha_discovery(
+            _pub(
                 id=f"{ctrl.id}_schedule_{idx}_skip",
                 ha_type="switch",
                 payload=ha_irrigation_switch_message(
@@ -560,7 +641,7 @@ class IrrigationManager:
             )
 
         # Zone end time sensor — HA shows countdown automatically
-        self._manager.publish_ha_discovery(
+        _pub(
             id=f"{ctrl.id}_zone_end_time",
             ha_type="sensor",
             payload=ha_irrigation_timestamp_sensor_message(
@@ -572,9 +653,23 @@ class IrrigationManager:
             ),
         )
 
+        # Next scheduled run time sensor
+        _pub(
+            id=f"{ctrl.id}_next_run_time",
+            ha_type="sensor",
+            payload=ha_irrigation_timestamp_sensor_message(
+                ctrl.id,
+                ctrl.name,
+                suffix="next_run_time",
+                name=f"{ctrl.name} Next Run",
+                config_helper=cfg,
+                icon="mdi:calendar-clock",
+            ),
+        )
+
         # Water source select — only when multiple sources exist
         if len(ctrl.water_sources) > 1:
-            self._manager.publish_ha_discovery(
+            _pub(
                 id=f"{ctrl.id}_water_source",
                 ha_type="select",
                 payload=ha_irrigation_select_message(
@@ -584,3 +679,14 @@ class IrrigationManager:
                     config_helper=cfg,
                 ),
             )
+
+        # Event entity — fires on interlock faults, cycle completions, etc.
+        _pub(
+            id=f"{ctrl.id}_event",
+            ha_type="event",
+            payload=ha_irrigation_event_message(
+                ctrl.id,
+                ctrl.name,
+                config_helper=cfg,
+            ),
+        )

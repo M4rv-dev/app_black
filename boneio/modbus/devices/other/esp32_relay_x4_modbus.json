@@ -1,5 +1,10 @@
 {
-  "model": "ESP32 Relay X4 Modbus",
+  "model": "ESP32 Relay x4 Modbus",
+  "manufacturer": "boneIO",
+  "description": "boneIO ESP32 4-channel Modbus relay board",
+  "category": "other",
+  "default_address": 1,
+  "default_update_interval": "30s",
   "registers_base": [
     {
       "base": 0,

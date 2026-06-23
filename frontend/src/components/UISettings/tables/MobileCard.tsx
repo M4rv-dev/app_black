@@ -1,5 +1,5 @@
 import React from 'react';
-import { FaEdit, FaTrash } from 'react-icons/fa';
+import { FaEdit, FaCopy, FaTrash, FaFileExport } from 'react-icons/fa';
 
 interface MobileCardField {
   label: string;
@@ -17,6 +17,10 @@ interface MobileCardProps {
   onEdit: () => void;
   /** Delete callback */
   onDelete: () => void;
+  /** Optional duplicate callback */
+  onDuplicate?: () => void;
+  /** Optional dashboard generation callback */
+  onDashboard?: () => void;
   /** Optional extra actions (e.g. discover button) */
   extraActions?: React.ReactNode;
   /** Optional click handler for the card body (e.g. expand) */
@@ -35,6 +39,8 @@ const MobileCard: React.FC<MobileCardProps> = ({
   fields,
   onEdit,
   onDelete,
+  onDuplicate,
+  onDashboard,
   extraActions,
   onClick,
   children,
@@ -62,6 +68,24 @@ const MobileCard: React.FC<MobileCardProps> = ({
             >
               <FaEdit className="w-4 h-4" />
             </button>
+            {onDashboard && (
+              <button
+                onClick={onDashboard}
+                className="btn btn-ghost btn-sm btn-square text-info"
+                title="HA Dashboard"
+              >
+                <FaFileExport className="w-4 h-4" />
+              </button>
+            )}
+            {onDuplicate && (
+              <button
+                onClick={onDuplicate}
+                className="btn btn-ghost btn-sm btn-square"
+                title="Duplicate"
+              >
+                <FaCopy className="w-4 h-4" />
+              </button>
+            )}
             <button
               onClick={onDelete}
               className="btn btn-ghost btn-sm btn-square text-error"
