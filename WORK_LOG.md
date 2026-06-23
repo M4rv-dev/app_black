@@ -79,7 +79,12 @@ components without touching logic.
 
 ## Active scope
 
-**Current task**: Refactor expansion-board feature into `modules/expander/` pattern.
+**Current task**: Upstream v1.5.0dev3+ merged into `migrate/v1.5.0dev3`, deployed and verified.
+Next: decide whether to merge `migrate/v1.5.0dev3` back into `feat/expansion-board`, plus
+follow-ups from §Phase D of `MIGRATION_REPORT.md` (USB-RS485 upstream PR, OLED shutdown
+service adoption, schema 3-place sync re-check).
+
+**Earlier task** (completed): Refactor expansion-board feature into `modules/expander/` pattern.
 
 **Why**: After merging upstream v1.4.0dev2 (commit `fbe2140`), audit revealed our code is scattered
 across 7+ upstream files. Each future upstream release will conflict on the same spots. Module
@@ -104,6 +109,113 @@ pattern eliminates that.
 ---
 
 ## Timeline
+
+### 2026-06-23 — Session 6 (upstream v1.5.0dev3+ migration)
+
+**Zgłoszenie**: użytkownik — "zdaje sie ze boneio wypuscilo gruby update. Czy
+jestesmy w stanie zmigrowac nasz projekt do tego co oni zrobili i ewentualnie
+jezeli jakies ficzerki sie dubluja to mozemy przestac uzywac naszej implementacji
+i sprobowac korzystac z ich no chyba ze poprosze Cie o przywrocenie naszej
+wersji bo moze okazac sie lepsza". Device IP zmienił się 192.168.1.22 → 192.168.1.7.
+
+**Stan na wejściu**:
+- Merge-base: `8f1a21c` (v1.4.0dev4). Upstream: `f2dd41a` (v1.5.0dev3+) — 81 commitów
+  wyprzedza nas; my +43.
+- Upstream big-ticket: full Remote Devices subsystem (ESPHome/MQTT/WLED/CAN),
+  System sensors, HA Dashboard wizard, Template subsystem (thermostat/alarm),
+  Irrigation overhaul, React 19 + Vite 8 + Tailwind 4.3 + DaisyUI 5.5 (v1.5.0dev2),
+  3 nowe migracje runtime (1.4.3, 1.4.4, 1.5.0).
+
+**Analiza per-commit (read-only)** → `MIGRATION_REPORT.md`:
+- Wszystkie 43 nasze commity = KEEP. Żaden nasz feature nie jest obsoletowany
+  upstreamem.
+- Kluczowe odkrycie: nasze `modules/remote_mqtt/` to **warstwa nadbudowana** na
+  upstreamowy `remote_*` (który istniał już od v1.4.0dev4), a nie duplikat —
+  upstream zrobił ESPHome/WLED/CAN, my dorzuciliśmy MQTT scan + Jinja2 + generic
+  topic + multi-subscriber dispatcher.
+- 34 plików tknięte obustronnie, ale tylko 8 realnych konfliktów po auto-mergu.
+
+**Wykonano (Phase A → B → C, jedna sesja)**:
+
+- ✅ **Phase A**: tag `pre-v1.5-migration` na HEAD pushed do fork; backup configu
+  device'a (7 plików, 26 KB) do `~/Documents/BoneIO/backups/pre-v1.5-migration-…/`.
+- ✅ **Phase B**: branch `migrate/v1.5.0dev3`, `git merge origin/dev-debian13`.
+  Auto-merge sam załatwił 26 z 34 plików. Resolved 8 konfliktów:
+  - `schema_converter.py` — usunąć theirs (nasz `_get_schema()` już wewnętrznie
+    woła `_inject_modbus_models`).
+  - `yaml_util.py` — zachowane **OBA**: `_apply_module_schema_extensions` (nasze)
+    + `_inject_modbus_models` (theirs); chain w `_get_schema`.
+  - `webui/app.py` — `dev_fake_device_router` include (theirs) + `ModuleRegistry.
+    register_routes(app)` (nasze).
+  - `remote_outputs.schema.json` + `config.schema.json` — union enum
+    (esphome_api/can/mqtt + wled) + nasze typed-array `items` dla
+    `interlock_group`.
+  - `InputsView.tsx` — theirs `copyToClipboard` import + nasze `FaSearch`/`FaTimes`.
+  - `ArrayTableWidget.tsx` — zachowane **OBA**: `handleAddOutput` (nasze)
+    i `handleDuplicate` (theirs); `outputKind` hook (nasze) + `isModbusWizardOpen`
+    state (theirs).
+  - `OutputTable.tsx` — nasze `isExpanderOutput` import.
+- ✅ **Phase B silent auto-merge verification**: UART list zachowała oba zestawy
+  (uart1-5 + /dev/ttyUSB0/1, /dev/ttyACM0), OLED hardening intact, upstream
+  533b9ea sleep-timer fix już obecny przez naszych a46e564 (gdzie nasze edycje
+  okolic obejmowały też tę linijkę).
+- ✅ **Phase B build**: `npm install` (55 added, 43 removed, 239 changed,
+  6 vulns 2 high — typowe), `npm run build` zielony w 5.44s na React 19 / Vite 8 /
+  Tailwind 4 / DaisyUI 5.5. Wszystkie 16 naszych modułów frontu skompilowało się
+  bez przeróbek. `py_compile` na wszystkich tknnętych plikach Python — czysto.
+- ✅ **Phase B commit**: `5ea91d7 Merge upstream v1.5.0dev3+ into feat/expansion-board`
+  + `8b76f20 chore(frontend): refresh package-lock`. Push fork
+  `migrate/v1.5.0dev3`.
+
+**Deploy (Phase C, na produkcji 192.168.1.7)**:
+
+- Keyring transfer: `boneio-deploy/boneio@192.168.1.22` → `…@192.168.1.7` przez
+  `python3 keyring` (uniknięcie re-prompta `inv configure`).
+- `inv deploy`: snapshot pre-deploy → `boneio_prev_20260623T221630Z`, rsync,
+  service restart. Health-check timeout 30s (HTTP 000) — service startował
+  3 migracje, faktyczny ready ~1m później.
+- **Startup log** (kluczowe linijki):
+  ```
+  00:17:21 INFO  BoneIO 1.5.0dev4 starting.
+  00:17:22 INFO  [early_oled] Early OLED initialized                       ← nasze hardening
+  00:17:35 INFO  [yaml_util] Schema: applied extension from modules/remote_mqtt  ← nasz ModuleRegistry
+  00:18:14 INFO  [manager.display] Final screen order: …, expander_left,
+                 expander_right, …                                          ← nasze ekrany expandera
+  00:18:21 INFO  [manager.display] DisplayManager initialized with 9 screens
+  00:18:22 INFO  Remote outputs registered: 3 total                        ← 2 MQTT (nasze) + 1 ESPHome (theirs)
+  00:18:22 INFO  [remote_mqtt.sensor] Registered MQTT remote sensor 'alarm_ropam_temp1'
+  00:18:22-43 INFO Applying migration 1.4.3 (OLED shutdown) → applied
+                                  migration 1.4.4 (nginx → Caddy)   → applied
+                                  migration 1.5.0 (OLED FIFO perms) → applied
+                  All pending migrations applied successfully.
+  00:19:07 INFO  Successfully connected to ESPHome device 'Boneio-02-Rolety'
+                  (+ 3 inne) — upstream ESPHome stack żyje na nowym build'zie.
+  ```
+- HTTP smoke: `:8090` → **200**, `:8091` → **200**, `/api/version` →
+  **`{"version":"1.5.0dev4","serial_no":"blk174d77"}`**. Service `active (running)`,
+  77M peak memory.
+
+**Niepokojące, ale nie blokujące**:
+- Single `OLED render_display:uptime failed after 7 attempt(s): [Errno 110]
+  Connection timed out` przy starcie — dokładnie ten failure mode, dla którego
+  `_safe_draw` budget istnieje. Następna klatka przeszła OK; ekran ostatecznie
+  zainicjalizowany.
+- `Device OUT_18/19/20/21/22/23/24 for action in P9_21/P8_…not found. Omitting.`
+  — istniejące wpisy w `event.yaml` referencują wyjścia, których fizycznie nie ma.
+  To stara higiena configu, niezwiązane z migracją.
+
+**Pending / follow-ups z `MIGRATION_REPORT.md` §Phase D**:
+- PR upstream nasz USB-RS485 schema patch (`3d52d45` + `af4bf08`) — wciąż nie ma
+  ich tam.
+- Decyzja o merge'u `migrate/v1.5.0dev3` → `feat/expansion-board` (chyba że
+  zostawiamy `feat/expansion-board` jako "stable v1.4 base" do rollbacka).
+- Audit czy upstream'owy template subsystem (thermostat/alarm panel) mógłby
+  zastąpić jakiś use case ROPAMa przez `remote_mqtt` — tylko jeśli faktycznie
+  pokrywa, nie z założenia.
+- Re-check 3-miejsc schema sync (`const.py` / `schema.yaml` / `*.schema.json`)
+  po upstreamowym overhaulu schem — czy nasze USB-RS485 paths są wszędzie.
+
+---
 
 ### 2026-05-19 — Session 5 (OLED naprawa + domknięcie luki w 3d52d45)
 
