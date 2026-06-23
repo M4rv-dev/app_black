@@ -29,19 +29,47 @@ const OutputGroupForm: React.FC<OutputGroupFormProps> = ({
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<'basic' | 'advanced'>('basic');
 
-  // Get available outputs from allOutputs with their effective IDs
-  // The backend keys outputs by custom `id` if set, otherwise by `boneio_output`.
-  // Groups must reference the effective ID so the backend can look them up in _outputs.
+  // Get available outputs from allOutputs with their effective IDs.
+  //
+  // `allOutputs` is the union of `formData.output` (board + expansion-board)
+  // and `formData.remote_outputs` (esphome / mqtt / wled / can). Three ID
+  // schemas exist:
+  //
+  //   1. Board outputs:     { id?, boneio_output: "OUT_01", … }
+  //                         → effectiveId = id || boneio_output
+  //   2. Expansion outputs: { id: "EX_OUT_01", kind: "mcp", mcp_id: "expander_left", … }
+  //                         → effectiveId = id   (boneio_output absent by design)
+  //   3. Remote outputs:    { device_id, output_id, remote_source, … }
+  //                         → effectiveId = `${device_id}_${output_id}`
+  //                         (matches the backend registration: see
+  //                          `Registered … remote output 'alarm_ropam_out6'`)
+  //
+  // The previous filter required `boneio_output`, which silently dropped both
+  // expansion outputs and remote outputs from the group-member picker.
   const availableOutputs = allOutputs
-    .filter(output => output.boneio_output && output.output_type !== 'cover')
+    .filter(output => {
+      if (!output || typeof output !== 'object') return false;
+      if (output.output_type === 'cover') return false;
+      return Boolean(
+        output.boneio_output
+        || output.id
+        || (output.device_id && output.output_id)
+      );
+    })
     .map(output => {
-      const effectiveId = output.id || output.boneio_output;
+      const effectiveId =
+        output.id
+        || output.boneio_output
+        || `${output.device_id}_${output.output_id}`;
+      const sourceLabel =
+        output.boneio_output
+        || (output.remote_source ? `${output.remote_source}:${output.device_id}/${output.output_id}` : effectiveId);
       return {
         id: effectiveId,
         name: output.name || effectiveId,
-        displayName: `${output.name || effectiveId} : ${output.boneio_output}`,
+        displayName: `${output.name || effectiveId} : ${sourceLabel}`,
         outputType: output.output_type,
-        boneioOutput: output.boneio_output,
+        boneioOutput: sourceLabel,
       };
     })
     .sort((a, b) => a.id.localeCompare(b.id));
