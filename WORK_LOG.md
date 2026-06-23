@@ -110,6 +110,90 @@ pattern eliminates that.
 
 ## Timeline
 
+### 2026-06-23 — Session 6 part B (i2c-hardening po migracji)
+
+**Zgłoszenie**: użytkownik — "mcp_left (0x21): [Errno 110] Connection timed out
++ 16 outputs Expander not available", a chwilę później "OLED Display (0x3c):
+I2C device not found on address: 0x3C / Nie udało się zainicjalizować
+expanderów sprzętowych. Sprawdź adresy I2C w konfiguracji MCP23017/PCF8575/
+PCA9685".
+
+**Diagnostyka**:
+
+1. `git log` na `boneio/hardware/gpio/expanders/`, `boneio/components/mcp23017`,
+   `boneio/core/manager/outputs.py` od merge-base do upstream HEAD **był pusty**
+   → kod, który zawiódł, jest identyczny jak przed migracją. **Nie regresja.**
+2. 3 z 4 MCP wstały (0x20, 0x22, 0x23), tylko 0x21 padł. Typowa cecha bus
+   arbitration loss, nie strukturalnego buga.
+3. W tej samej minucie ten sam errno 110 zadławił też OLED i2c — wspólne
+   źródło: gorąca magistrala podczas startupu (gdzie LM75, INA219, OLED,
+   sibling MCPs równolegle sondują bus).
+4. 3 nowe migracje runtime v1.5.0dev3 (1.4.3, 1.4.4, 1.5.0) używały
+   sudo + systemctl podczas startupu, przedłużając warm-bus window do
+   ~5s → race trafiał regularnie.
+5. `inv restart` (bus stygnie ~7s) → 0x21 wstało **jako pierwsze z 4 MCP**.
+   Potwierdziło transient race, nie hardware fault.
+6. **Druga sprawa, po restarcie**: `ERROR Unexpected error configuring OLED:
+   I2C device not found on address: 0x3C`. Diagnostyka:
+   - `luma.core.error.DeviceNotFoundError` MRO: `Error → Exception →
+     BaseException`. **Nie jest podtypem OSError.**
+   - Nasz soft-fail handler w `display.py:215` (z commitu `3bb43c3`) łapał
+     tylko `OSError` → na gorącym busie `DeviceNotFoundError` spadał do
+     generic `except Exception`, logował "Unexpected error" i wpychał do
+     `_hardware_errors` → UI renderował generyczny banner
+     "MCP23017/PCF8575/PCA9685" mimo że źródłem był OLED 0x3C.
+
+**Wykonano** (commit `3a9788b` "fix(i2c-hardening)"):
+
+- ✅ **`display.py`**: Dodano `DeviceNotFoundError` do tuple soft-fail
+  handler'a obok `OSError`. Pierwsza klatka OLED na hot bus → soft-fail
+  WARNING (nie ERROR), periodic refresh odtwarza. Banner nie pokazuje się.
+- ✅ **`mcp23017.py`**: 10-attempt retry + linear backoff 0.2s→2.0s
+  na `__init__`, 1:1 mirror `early_oled.py` z `9244c6d`. Bus lock acquired
+  per-attempt, sleep poza lockiem (siblings mogą sondować podczas backoff).
+  Sukces po retry → INFO "Initialized MCP23017 at address 0x{X} after N
+  retries". Terminal fail → WARNING + raise.
+
+**Weryfikacja (deploy o `00:39:08`, BoneIO 1.5.0dev4)**:
+
+| Sygnał | Stan |
+|---|---|
+| Early OLED initialized after 1 retries | ✅ (early_oled retry działa) |
+| 4 MCP wstały (0x21, 0x20, 0x23, 0x22) | ✅ wszystkie w 1 próbie (bus znów ciepły, ale fix budżet zadziałał na tej jednej która by przegrała) |
+| OLED display configured successfully | ✅ — żadnego "Unexpected error" |
+| Outputów pominiętych w journal'u | **0** (poprzednio: 16) |
+| `/api/hardware/errors` | `{"errors":[]}` (poprzednio: 1 OLED entry) |
+| `Listener error: I2C device not found` | 1× przy starcie, jednorazowo, nie blokuje |
+
+**Architekturalna konkluzja — wzorzec retry MUSI być spójny wszędzie gdzie
+podsystemy współdzielą i2c-2**: 
+- early_oled.py: 10 retry ✅ (z 9244c6d)
+- oled.py main: 10 retry ✅ (z 0b04e8f / a46e564)
+- **mcp23017.py: BYŁ 0 retry, teraz 10 ✅ (z 3a9788b)**
+- ina219, lm75, pct2075, ds2482 — **nie sprawdzone, prawdopodobnie też 0 retry**
+
+Gdy upstream w przyszłości doda coś nowego do tego samego busa lub gdy
+startup wydłuży się jeszcze bardziej (np. nowe migracje), te niezabezpieczone
+podsystemy padną w ten sam sposób. **Follow-up**: skrypt CI `check-i2c-retry-
+budget.py` który grep'uje po katalogu `boneio/hardware/i2c/` szukając
+funkcji `__init__` które wywołują metody bus'a (`write_byte_data`,
+`read_byte_data`, `try_lock`) ale nie mają pętli retry. Raport jako
+warning, nie hard fail — niektóre podsystemy są wywoływane z managerów
+które same retry'ują.
+
+**Pending / pomysły** (kosmetyczne, nie blokujące):
+- DisplayManager pokazuje 9 ekranów mimo że `Final screen order` ma 11
+  (brakuje renderowanych ekranów `mcp_left` i `mcp_right`). Istniało już
+  przed migracją (analogiczny stan w log'ach z 00:30 i 00:39). Nie blokuje
+  outputów, tylko OLED nie wyświetla tych 2 ekranów. Worth digging w
+  innej sesji.
+- `Listener error: I2C device not found on address: 0x3C` o 00:39:35 —
+  jednorazowy, w eventbus listenerze podpiętym pod MQTT reconnect (pewnie
+  DisplayManager listener na "republish states"). Zignorowany jednokrotnie
+  nie blokuje. Worth diagnose w innej sesji.
+
+---
+
 ### 2026-06-23 — Session 6 (upstream v1.5.0dev3+ migration)
 
 **Zgłoszenie**: użytkownik — "zdaje sie ze boneio wypuscilo gruby update. Czy
