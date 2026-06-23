@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from luma.core.error import DeviceNotFoundError
+
 from boneio.const import SHOW_HA
 from boneio.exceptions import GPIOInputException, I2CError
 
@@ -212,7 +214,14 @@ class DisplayManager:
                 self._oled.clear_display()
                 self._oled.render_display()
                 _LOGGER.info("OLED display configured successfully")
-            except OSError as draw_err:
+            except (OSError, DeviceNotFoundError) as draw_err:
+                # DeviceNotFoundError inherits from Exception (not OSError) in
+                # luma.core — without it explicitly in this tuple, hot-bus probe
+                # failures fall through to the generic Exception handler below,
+                # surface as "Unexpected error configuring OLED" in the journal,
+                # and get pushed to _hardware_errors which the WebUI renders as
+                # a hardware-not-found banner. Treat both as transient first-paint
+                # failures; periodic refresh has its own retry path.
                 _LOGGER.warning(
                     "OLED first paint failed (%s) — periodic refresh will retry shortly",
                     draw_err,

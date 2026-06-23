@@ -79,34 +79,53 @@ class MCP23017:
         # Timestamp of last I2C operation for rate limiting
         self._last_operation_time = 0.0
         
-        # Lock the I2C bus for initialization
-        if not self._i2c.try_lock():
-            raise RuntimeError("Failed to lock I2C bus for MCP23017 initialization")
-        
-        try:
-            # Disable Sequential Operation (SEQOP) - logic assumes Byte mode
-            # IOCON register is at 0x0A and 0x0B (shared in BANK=0)
-            # Write to both registers for robustness in case of dirty startup
-            self._write_register_unlocked(0x0A, 0x20)  # SEQOP=1 (disabled), BANK=0
-            self._write_register_unlocked(0x0B, 0x20)  # Mirror register
-            
-            # Read current output latch states from hardware to preserve relay states
-            # This prevents momentary OFF state during application restart
-            self._port_a_state = self._read_register_unlocked(OLATA)
-            self._port_b_state = self._read_register_unlocked(OLATB)
-            _LOGGER.debug(
-                f"MCP23017@0x{address:02X} preserved states: "
-                f"A=0b{self._port_a_state:08b}, B=0b{self._port_b_state:08b}"
-            )
-            
-            # Initialize: Set all pins as outputs (IODIR=0x00)
-            # This does NOT change the output latch values
-            self._write_register_unlocked(IODIRA, 0x00)
-            self._write_register_unlocked(IODIRB, 0x00)
-            
-            _LOGGER.info(f"Initialized MCP23017 at address 0x{address:02X}")
-        finally:
-            self._i2c.unlock()
+        # Retry budget — handles transient i2c arbitration loss during warm
+        # restart, where multiple drivers (LM75, INA219, OLED, sibling MCPs)
+        # probe the bus in parallel and one device occasionally times out on
+        # the first write (kernel returns [Errno 110] / ETIMEDOUT). Mirrors
+        # the same 10-attempt / linear-backoff pattern used in
+        # boneio/hardware/display/early_oled.py so both early-init points
+        # have a consistent budget for the same shared bus.
+        RETRY_COUNT = 10
+        last_err: Exception | None = None
+        for attempt in range(RETRY_COUNT):
+            if not self._i2c.try_lock():
+                raise RuntimeError("Failed to lock I2C bus for MCP23017 initialization")
+            try:
+                self._write_register_unlocked(0x0A, 0x20)
+                self._write_register_unlocked(0x0B, 0x20)
+                self._port_a_state = self._read_register_unlocked(OLATA)
+                self._port_b_state = self._read_register_unlocked(OLATB)
+                _LOGGER.debug(
+                    f"MCP23017@0x{address:02X} preserved states: "
+                    f"A=0b{self._port_a_state:08b}, B=0b{self._port_b_state:08b}"
+                )
+                self._write_register_unlocked(IODIRA, 0x00)
+                self._write_register_unlocked(IODIRB, 0x00)
+                if attempt > 0:
+                    _LOGGER.info(
+                        "Initialized MCP23017 at address 0x%02X after %d retries",
+                        address, attempt,
+                    )
+                else:
+                    _LOGGER.info(f"Initialized MCP23017 at address 0x{address:02X}")
+                return
+            except OSError as err:
+                last_err = err
+                backoff_s = 0.2 + (2.0 - 0.2) * attempt / (RETRY_COUNT - 1)
+                _LOGGER.debug(
+                    "MCP23017@0x%02X init attempt %d/%d failed (%s), retrying in %.2fs",
+                    address, attempt + 1, RETRY_COUNT, err, backoff_s,
+                )
+            finally:
+                self._i2c.unlock()
+            if attempt < RETRY_COUNT - 1:
+                time.sleep(backoff_s)
+        _LOGGER.warning(
+            "MCP23017@0x%02X init failed after %d retries: %s",
+            address, RETRY_COUNT, last_err,
+        )
+        raise last_err
 
     def _write_register_unlocked(self, register: int, value: int) -> None:
         """Write byte to register (caller must hold I2C lock).
