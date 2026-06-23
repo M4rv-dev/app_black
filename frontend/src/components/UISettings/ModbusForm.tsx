@@ -18,10 +18,15 @@ const ModbusForm: React.FC<ModbusFormProps> = ({ data, onChange }) => {
     onChange({ ...data, [field]: value });
   };
 
-  // Normalize uart value to lowercase for matching with options
-  // Handle both "uart4" and "UART4" formats
+  // Normalize legacy "UART4" → "uart4" so capitalisation in old configs still
+  // matches the lowercase <option value="uart4">. Do NOT lowercase /dev/tty…
+  // device paths — Linux device nodes are case-sensitive, so toLowerCase() on
+  // "/dev/ttyUSB0" yielded "/dev/ttyusb0" which matched no option and dropped
+  // the dropdown back to the placeholder.
   const rawUart = data?.uart || '';
-  const uartValue = typeof rawUart === 'string' ? rawUart.toLowerCase() : '';
+  const uartValue = typeof rawUart === 'string'
+    ? (rawUart.startsWith('/dev/') ? rawUart : rawUart.toLowerCase())
+    : '';
 
   return (
     <div className="space-y-4">
