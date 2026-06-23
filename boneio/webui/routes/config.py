@@ -337,6 +337,9 @@ async def get_parsed_config():
                     enriched_groups.append(group)
             config_data["output_group"] = enriched_groups
 
+        from boneio.modules._registry import ModuleRegistry
+        ModuleRegistry.get().enrich_config_response(config_data)
+
         elapsed = time.time() - start
 
         _config_cache["data"] = config_data
@@ -439,6 +442,9 @@ async def update_section_content(section: str, data: dict | list = Body(...)):
                     "errors": [f"Invalid host: '{host}'. Use an IPv4 address or hostname."],
                 },
             )
+
+    from boneio.modules._registry import ModuleRegistry
+    ModuleRegistry.get().strip_for_save(section, data)
 
     try:
         app_state = _get_app_state()

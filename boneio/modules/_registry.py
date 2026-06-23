@@ -53,6 +53,8 @@ _HOOKS = (
     "try_setup_input",
     "cleanup_inputs",
     "make_reload_handler",
+    "enrich_config_response",
+    "strip_for_save",
 )
 
 
@@ -181,6 +183,43 @@ class ModuleRegistry:
                 except Exception:
                     _LOGGER.exception("ModuleRegistry: try_setup_output FAILED — %s", mod.__name__)
         return False
+
+    def enrich_config_response(self, config_data: dict) -> None:
+        """Give each module a chance to add derived/virtual fields to the
+        parsed config before it's returned by ``GET /api/config``.
+
+        Modules mutate ``config_data`` in place — typically by adding alias
+        fields like ``boneio_output`` to sections they own (e.g. expansion
+        outputs, remote outputs) so the upstream UI components can filter
+        them without any module-specific knowledge.
+
+        Counterpart: ``strip_for_save`` removes the same fields before the
+        config is persisted back to YAML, keeping user-edited files clean.
+        """
+        for mod in self._modules:
+            fn = getattr(mod, "enrich_config_response", None)
+            if fn is not None:
+                try:
+                    fn(config_data)
+                except Exception:
+                    _LOGGER.exception("ModuleRegistry: enrich_config_response FAILED — %s", mod.__name__)
+
+    def strip_for_save(self, section: str, data: Any) -> None:
+        """Give each module a chance to strip derived fields from a section
+        payload before it's written to YAML via ``PUT /api/config/{section}``.
+
+        Mirrors ``enrich_config_response`` — modules mutate ``data`` in place
+        to remove fields they had injected on the GET path, so round-trip
+        save→load doesn't accumulate auto-generated cruft in the user's
+        YAML files.
+        """
+        for mod in self._modules:
+            fn = getattr(mod, "strip_for_save", None)
+            if fn is not None:
+                try:
+                    fn(section, data)
+                except Exception:
+                    _LOGGER.exception("ModuleRegistry: strip_for_save FAILED — %s", mod.__name__)
 
     def make_reload_handler(self, manager: "Manager", section: str):
         """Return the first non-None reload handler for ``section``, or ``None``."""
