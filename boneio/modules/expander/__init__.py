@@ -73,7 +73,7 @@ def enrich_config_response(config_data: dict) -> None:
         if entry.get("kind") != "mcp":
             continue
         entry_id = entry.get("id")
-        if entry_id and is_expander_output(entry_id):
+        if entry_id and is_expander_output(entry):
             entry["boneio_output"] = entry_id
 
 
@@ -94,7 +94,7 @@ def strip_for_save(section: str, data: Any) -> None:
         if (
             entry.get("kind") == "mcp"
             and entry_id
-            and is_expander_output(entry_id)
+            and is_expander_output(entry)
             and entry.get("boneio_output") == entry_id
         ):
             entry.pop("boneio_output", None)
