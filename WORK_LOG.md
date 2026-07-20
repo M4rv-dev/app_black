@@ -170,13 +170,17 @@ o zachowanie istniejących urządzeń (ROPAM) przy migracji configu.
   log scan clean. Post-restart veryfikacja: 5 remote outputs (ROPAM out5/out6 + reszta),
   4 MCP, expander screens, ROPAM temp sensor 13.5°C — **wszystkie urządzenia przetrwały**.
 
-**Config migration — v4_wled_cache błąd (benign, do follow-up)**:
-Migracja `v4_wled_cache` rzuca `Failed to strip WLED cache fields: could not determine
-a constructor for the tag '!include_files'` — jej loader YAML nie zna NASZEGO tagu
-`!include_files` (split-write expandera). Strip padł i został złapany → **config.yaml
-nietknięty**, ale `config_version` bumpnięty do 4 (nie powtórzy się). Wpływ tylko dla
-urządzeń WLED (perf, auto-regeneruje z API). **Follow-up**: utwardzić loader migracji v4
-o `!include_files` constructor (mały patch) LUB zgłosić upstream. Nie blokuje.
+**Config migration — v4_wled_cache błąd → NAPRAWIONY (commit `d3545bb`)**:
+Migracja `v4_wled_cache` rzucała `Failed to strip WLED cache fields: could not determine
+a constructor for the tag '!include_files'` — jej `IncludeLoader` rejestrował tylko
+konstruktor `!include`, nie NASZ `!include_files` (split-write expandera dla `output:`).
+Strip padał i był łapany → **config.yaml nietknięty**, ale `config_version` bumpnięty do 4.
+**Fix**: dodano konstruktor `!include_files` (mirror `yaml_util.IncludeLoader`) + obsługę
+remote_devices w obu formach include. Zweryfikowane: loader parsuje oba tagi. Deploy +
+smoke OK; nowy boot (PID 26324) czysty, bez błędu v4 (config_version=4 → skip). Uwaga:
+prawdziwym stripperem WLED przy dodawaniu urządzeń jest ścieżka ZAPISU
+(`yaml_util.update_config_section:1319`, ma własny IncludeLoader), więc live-adds WLED
+były zawsze obsłużone; fix migracji to poprawność dla fresh install / legacy inline-WLED.
 
 **Odpowiedź na pytanie o output-group toggle** (osobny wątek, bez zmian w kodzie):
 Upstream toggluje grupę jako całość (`async_turn_off` = wszystkie OFF). Objaw usera
@@ -185,7 +189,6 @@ Upstream toggluje grupę jako całość (`async_turn_off` = wszystkie OFF). Obja
 configowy: `all_on_behaviour: False` (domyślne, any-on) LUB akcja `OFF` zamiast TOGGLE.
 
 **Pending / follow-ups**:
-- v4_wled_cache `!include_files` hardening (patrz wyżej).
 - OutputForm advancedTabContent: nie zaadoptowano upstreamowego zero-clearing UX na
   momentary inputs + SettingsToggleGroup dla adjustable_duration (nasze DRY variant,
   funkcjonalnie kompletne) — kosmetyczny follow-up.
