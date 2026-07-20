@@ -110,6 +110,92 @@ pattern eliminates that.
 
 ## Timeline
 
+### 2026-07-21 — Session 7 (upstream v1.5.0dev3 → v1.5.0dev17 migration)
+
+**Zgłoszenie**: użytkownik — "BoneIO dodało nowy update. Potrzebujemy podnieść nasz
+core do tej wersji i podłączyć wszystkie nasze aktualne moduły. Dodatkowo powinniśmy
+przetestować czy zmiany, które wprowadziło BoneIO nie wpłyną na nasze rozwiązania."
+W trakcie sesji dwa dodatkowe wątki: (a) pytanie o output-group toggle bug, (b) obawa
+o zachowanie istniejących urządzeń (ROPAM) przy migracji configu.
+
+**Stan na wejściu**:
+- Merge-base `f2dd41a` (v1.5.0dev3). Upstream `3b9c664` (v1.5.0dev17) — **+107 commitów**,
+  204 pliki, +19.6k/−9.9k. My +55 commitów.
+- Upstream big-ticket: config.py split na 5 modułów (`config_core/actions/backups/
+  discovery/files`), Teach Mode, Binding Matrix, Quick Action Sheet,
+  SearchableEntityPicker, NumericInput, EntityCard/EntityGrid refactor, board v1.0
+  (DS2482/buzzer), WLED cache (config_version 4), combined /api/init + AppInitContext,
+  MQTT Reference dialog, 2 migracje runtime (config v4, system 1.5.1 UFW).
+
+**Audyt parytetu (Explore agent) — kluczowa decyzja keep/retire**:
+- **expander enricher → KEEP na stałe**. Upstream `78b9a2c` uczy OutputGroupForm
+  akceptować remote outputs natywnie (`remote_source && device_id`), ale expander
+  outputs mają `kind: mcp` BEZ `remote_source` → przepadają w obu gałęziach natywnego
+  filtra. Bez naszego `boneio_output` niewidoczne. Upstream nie ma planu wsparcia MCP.
+  User potwierdził: BoneIO wycofało expansion board z oferty (kanibalizacja sprzedaży)
+  → expander module jest **permanentny** (memory: [[project_expander_permanent]]).
+- **remote_mqtt enricher → RETIRED** (decyzja usera "retire od razu"). Upstream `78b9a2c`
+  pokrywa remote_outputs natywnie. Usunięto `enrich_config_response`+`strip_for_save`
+  z `remote_mqtt/manager_integration.py`.
+
+**Wykonano (Faza 0→E)**:
+
+- ✅ **Faza 0**: tag `pre-v1.5.0dev17-migration` push do fork; commit Session-6d WORK_LOG.
+  (Lokalny runtime-backup przez `inv backup` padł — macOS rsync 2.6.9 nie zna
+  `--ignore-missing-args`; nieblokujące, bo deploy robi device-side snapshot +
+  nie dotyka config.yaml.)
+- ✅ **Faza A**: branch `migrate/v1.5.0dev17`, merge `origin/dev-debian13`. **20 konfliktów**
+  (4 backend + 16 frontend) rozwiązane wzorcem „zachowaj oba":
+  - `config.py` → theirs (shim); enrich/strip przeniesione do `config_core.py`.
+  - `yaml_util.py` → nasza logika split-write expandera (board vs EX_* files).
+  - `schema_converter.py` → nasz `_get_schema()` (modbus + module extensions).
+  - `manager.py` → nasz `try_setup_output` hook + upstreamowy brightness detect (oba).
+  - `RemoteOutputForm` → nasze MQTT outputs + upstreamowe WLED segments (oba dropdown).
+  - `OutputForm` → nasz `McpHardwareFields` + upstreamowy `SettingsToggleGroup`.
+  - `ArrayTableWidget` → nasz inline FormRenderer (threading outputKind+mcp23017);
+    NIE adoptowano upstreamowego `EditItemDialog` bo nie forwarduje expander props.
+  - `InputsView`/`OutputsView` → upstreamowy EntityCard/EntityGrid/Teach Mode refactor
+    + wpięty NASZ search bar (iteruje `filtered*` zamiast `localInputs`/`items`).
+  - `EntityCard` (rename z OutputItem), `SensorView` (skeleton+grouped), `App.tsx`
+    (AppInitProvider + nasz ToastContainer/ErrorBoundary), locales (unia), select/index.css.
+- ✅ **Faza B**: expander enrich/strip re-wired do `config_core.get_parsed_config` (GET) +
+  `update_section_content` (PUT); `app.py` cache pre-population hook (L715) intact.
+  remote_mqtt enricher usunięty.
+- ✅ **Faza C**: `npm run build` zielony (tsc -b + vite, React 19). Post-merge build fixy:
+  ArrayTableWidget Dialog importy (upstream je usunął przy EditItemDialog); App.tsx
+  4 duplikaty importów (upstream lazy-loaduje). py_compile 66 plików OK. Import smoke:
+  expander callable, remote_mqtt retired. **3-place schema sync (USB-RS485) intact**.
+- ✅ **Faza D**: `inv deploy` (snapshot `boneio_prev_20260720T232349Z`). **Smoke PASSED**:
+  service active, HTTP :8090/:8091 = 200, `/api/version` = **1.5.0dev17**, WebSocket ok,
+  log scan clean. Post-restart veryfikacja: 5 remote outputs (ROPAM out5/out6 + reszta),
+  4 MCP, expander screens, ROPAM temp sensor 13.5°C — **wszystkie urządzenia przetrwały**.
+
+**Config migration — v4_wled_cache błąd (benign, do follow-up)**:
+Migracja `v4_wled_cache` rzuca `Failed to strip WLED cache fields: could not determine
+a constructor for the tag '!include_files'` — jej loader YAML nie zna NASZEGO tagu
+`!include_files` (split-write expandera). Strip padł i został złapany → **config.yaml
+nietknięty**, ale `config_version` bumpnięty do 4 (nie powtórzy się). Wpływ tylko dla
+urządzeń WLED (perf, auto-regeneruje z API). **Follow-up**: utwardzić loader migracji v4
+o `!include_files` constructor (mały patch) LUB zgłosić upstream. Nie blokuje.
+
+**Odpowiedź na pytanie o output-group toggle** (osobny wątek, bez zmian w kodzie):
+Upstream toggluje grupę jako całość (`async_turn_off` = wszystkie OFF). Objaw usera
+(1/3 zapalony → toggle → pozostałe 2 się zapalają) to symptom `all_on_behaviour: True`
++ akcja TOGGLE: grupa uznana OFF (bo nie wszystkie ON) → toggle robi turn_on all. Fix
+configowy: `all_on_behaviour: False` (domyślne, any-on) LUB akcja `OFF` zamiast TOGGLE.
+
+**Pending / follow-ups**:
+- v4_wled_cache `!include_files` hardening (patrz wyżej).
+- OutputForm advancedTabContent: nie zaadoptowano upstreamowego zero-clearing UX na
+  momentary inputs + SettingsToggleGroup dla adjustable_duration (nasze DRY variant,
+  funkcjonalnie kompletne) — kosmetyczny follow-up.
+- Rozważyć adopcję `EditItemDialog` (dodać outputKind/mcp23017 passthrough) dla spójności
+  z BindingMatrix — obecnie nasz inline dialog diverguje.
+- UI manual smoke (do potwierdzenia przez usera): output-group picker pokazuje expander+
+  remote, modbus dropdown /dev/ttyUSB0, OLED żywy, Teach Mode działa.
+
+---
+
 ### 2026-06-24 — Session 6 part D (output-groups dropdown + zasada upstream-friendliness)
 
 **Zgłoszenia (w kolejności napływania)**:
