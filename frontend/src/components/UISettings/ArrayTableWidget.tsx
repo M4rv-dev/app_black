@@ -11,6 +11,7 @@ import { useImportExport } from './hooks/useImportExport';
 import { validateItem, areAllItemsUsed } from './helpers/itemValidation';
 import { OutputAddButton, isExpanderOutput, useOutputKind, EXPANDER_OUTPUT_PREFIX } from './modules/expander';
 import FormRenderer from './components/FormRenderer';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import TableRenderer from './components/TableRenderer';
 import DeleteConfirmDialog from './components/DeleteConfirmDialog';
 import ImportDialog from './components/ImportDialog';
