@@ -17,6 +17,7 @@ import RemoteDeviceForm from '../RemoteDeviceForm';
 import TemplateForm from '../TemplateForm';
 import ADCForm from '../ADCForm';
 import BoardSensorsForm from '../BoardSensorsForm';
+import DS2482Form from '../DS2482Form';
 import RemoteInputForm from '../RemoteInputForm';
 import RemoteOutputForm from '../RemoteOutputForm';
 import RemoteSensorForm from '../modules/remote_mqtt/forms/RemoteSensorForm';
@@ -57,6 +58,8 @@ interface FormRendererProps {
   onValidationChange: (hasErrors: boolean) => void;
   onInterlockGroupCreated: (name: string) => void;
   attemptedSubmit: boolean;
+  /** Optional initial tab for EventForm (e.g., 'single', 'double', 'long'). */
+  initialTab?: string;
 }
 
 /**
@@ -77,12 +80,14 @@ function inputFormProps(props: FormRendererProps) {
     allCovers: props.allCovers,
     allAreas: props.allAreas,
     allRemoteDevices: props.allRemoteDevices,
+    allRemoteInputs: props.allRemoteInputs || [],
     editingIndex: props.editingIndex,
     onValidationChange: props.onValidationChange,
     attemptedSubmit: props.attemptedSubmit,
     savedOutputs: props.savedOutputs,
     savedOutputGroups: props.savedOutputGroups,
     savedCovers: props.savedCovers,
+    initialTab: props.initialTab as 'basic' | 'single' | 'double' | 'triple' | 'long' | 'sequences' | 'advanced' | undefined,
   };
 }
 
@@ -137,12 +142,14 @@ const FormRenderer: React.FC<FormRendererProps> = (props) => {
           allCovers={props.allCovers}
           allAreas={props.allAreas}
           allRemoteDevices={props.allRemoteDevices}
+          allRemoteInputs={props.allRemoteInputs || []}
           allBinarySensors={props.allBinarySensors}
           onValidationChange={props.onValidationChange}
           attemptedSubmit={props.attemptedSubmit}
           savedOutputs={props.savedOutputs}
           savedOutputGroups={props.savedOutputGroups}
           savedCovers={props.savedCovers}
+          initialTab={props.initialTab as any}
         />
       </div>
     );
@@ -320,6 +327,21 @@ const FormRenderer: React.FC<FormRendererProps> = (props) => {
         <BoardSensorsForm
           data={editingItem}
           onChange={props.onChange}
+          existingItems={value}
+          editingIndex={editingIndex}
+          onValidationChange={props.onValidationChange}
+        />
+      );
+
+    case 'ds2482':
+      return (
+        <DS2482Form
+          data={editingItem}
+          onChange={props.onChange}
+          onSave={props.onSave}
+          onCancel={props.onCancel}
+          isNew={editingIndex === null}
+          schema={schema}
           existingItems={value}
           editingIndex={editingIndex}
           onValidationChange={props.onValidationChange}

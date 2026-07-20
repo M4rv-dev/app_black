@@ -1,9 +1,5 @@
 import React, { useState } from 'react';
-import { FaTrash, FaPlay } from 'react-icons/fa';
-import { useTranslation } from '@/hooks/useTranslation';
-import axios from '@/api/axios';
-import type { CoverEntity, OutputEntity, BinarySensorEntity } from '@/types/config';
-import ActionConditions from './ActionFields/ActionConditions';
+import { NumericInput } from '@/components/ui/NumericInput';
 import {
   Select,
   SelectContent,
@@ -11,7 +7,54 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { FaTrash, FaPlay, FaLightbulb, FaCloud, FaWifi, FaSort } from 'react-icons/fa';
+import { useTranslation } from '@/hooks/useTranslation';
+import axios from '@/api/axios';
+import type { CoverEntity, OutputEntity, BinarySensorEntity } from '@/types/config';
+import ActionConditions from './ActionFields/ActionConditions';
 import SimpleTimePeriodInput from './widgets/SimpleTimePeriodInput';
+
+// Helper to render distinct theme icons for each action type
+const getActionTypeIcon = (type: string) => {
+  switch (type) {
+    case 'output':
+      return <FaLightbulb className="text-amber-500 shrink-0 text-sm" />;
+    case 'cover':
+      return <FaSort className="text-blue-500 shrink-0 text-sm" />;
+    case 'mqtt':
+      return <FaCloud className="text-info shrink-0 text-sm" />;
+    case 'output_over_mqtt':
+      return (
+        <div className="flex gap-0.5 items-center shrink-0">
+          <FaCloud className="text-info text-[10px]" />
+          <FaLightbulb className="text-amber-500 text-[10px]" />
+        </div>
+      );
+    case 'cover_over_mqtt':
+      return (
+        <div className="flex gap-0.5 items-center shrink-0">
+          <FaCloud className="text-info text-[10px]" />
+          <FaSort className="text-blue-500 text-[10px]" />
+        </div>
+      );
+    case 'remote_output':
+      return (
+        <div className="flex gap-0.5 items-center shrink-0">
+          <FaWifi className="text-success text-[10px]" />
+          <FaLightbulb className="text-amber-500 text-[10px]" />
+        </div>
+      );
+    case 'remote_cover':
+      return (
+        <div className="flex gap-0.5 items-center shrink-0">
+          <FaWifi className="text-success text-[10px]" />
+          <FaSort className="text-blue-500 text-[10px]" />
+        </div>
+      );
+    default:
+      return null;
+  }
+};
 
 // Import sub-components
 import {
@@ -50,8 +93,12 @@ interface ActionFieldsProps {
   savedCovers?: CoverEntity[];
   clickType?: 'single' | 'double' | 'triple' | 'long' | 'double_then_long' | 'single_then_long' | 'double_then_single' | 'pressed' | 'released';
   allBinarySensors?: BinarySensorEntity[];
+  /** Remote inputs (binary sensors from ESPHome/CAN devices) for condition entity selection */
+  allRemoteInputs?: Array<Record<string, unknown>>;
   /** Entity ID to exclude from condition binary_sensor list (prevents self-reference) */
   excludeEntityId?: string;
+  /** Area ID of the input being configured — used to prioritize same-area entities in pickers. */
+  preferredArea?: string;
 }
 
 /**
@@ -77,7 +124,9 @@ const ActionFields: React.FC<ActionFieldsProps> = ({
   savedCovers,
   clickType,
   allBinarySensors = [],
+  allRemoteInputs = [],
   excludeEntityId,
+  preferredArea,
 }) => {
   const { t } = useTranslation();
   const actionType = action.action || 'output';
@@ -164,23 +213,46 @@ const ActionFields: React.FC<ActionFieldsProps> = ({
       {/* Action Type Selection */}
       <div className="form-control mb-3">
         <label className="label">
-          <span className="label-text font-medium">{t('event_form.action_type')}</span>
+          <span className="label-text font-semibold">{t('event_form.action_type')}</span>
         </label>
         <Select
           value={actionType}
           onValueChange={(value) => onUpdate('action', value)}
         >
           <SelectTrigger className="w-full">
-            <SelectValue placeholder={t('event_form.select_action_type')} />
+            <SelectValue placeholder={t('event_form.action_type')}>
+              {(val: string | null) => {
+                if (!val) return t('event_form.action_type');
+                const typeKey = `actions.type_${val}`;
+                const translated = t(typeKey);
+                const label = translated !== typeKey
+                  ? translated
+                  : val.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                return (
+                  <span className="flex items-center gap-2">
+                    {getActionTypeIcon(val)}
+                    {label}
+                  </span>
+                );
+              }}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
-            {actionTypeOptions.map((opt: string) => (
-              <SelectItem key={opt} value={opt}>
-                {opt.split('_').map(word =>
-                  word.charAt(0).toUpperCase() + word.slice(1)
-                ).join(' ')}
-              </SelectItem>
-            ))}
+            {actionTypeOptions.map((opt: string) => {
+              const typeKey = `actions.type_${opt}`;
+              const translated = t(typeKey);
+              const label = translated !== typeKey
+                ? translated
+                : opt.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+              return (
+                <SelectItem key={opt} value={opt}>
+                  <span className="flex items-center gap-2">
+                    {getActionTypeIcon(opt)}
+                    {label}
+                  </span>
+                </SelectItem>
+              );
+            })}
           </SelectContent>
         </Select>
       </div>
@@ -196,6 +268,7 @@ const ActionFields: React.FC<ActionFieldsProps> = ({
           actionCoverOptions={actionCoverOptions}
           savedCovers={savedCovers}
           isCoverSaved={isCoverSaved}
+          preferredArea={preferredArea}
         />
       )}
 
@@ -211,6 +284,7 @@ const ActionFields: React.FC<ActionFieldsProps> = ({
           actionOutputOptions={actionOutputOptions}
           savedOutputs={savedOutputs}
           savedOutputGroups={savedOutputGroups}
+          preferredArea={preferredArea}
         />
       )}
 
@@ -278,23 +352,19 @@ const ActionFields: React.FC<ActionFieldsProps> = ({
           </label>
           <div className="flex gap-2">
             <div className="flex-1">
-              <input
-                type="number"
+              <NumericInput
                 placeholder={t('event_form.min_duration_ms')}
-                className="input input-bordered w-full"
                 value={action.min_duration || ''}
-                onChange={(e) => onUpdate('min_duration', e.target.value ? parseInt(e.target.value) : undefined)}
-                min="0"
+                onChange={(v) => onUpdate('min_duration', v === '' ? undefined : v)}
+                min={0}
               />
             </div>
             <div className="flex-1">
-              <input
-                type="number"
+              <NumericInput
                 placeholder={t('event_form.max_duration_ms')}
-                className="input input-bordered w-full"
                 value={action.max_duration || ''}
-                onChange={(e) => onUpdate('max_duration', e.target.value ? parseInt(e.target.value) : undefined)}
-                min="0"
+                onChange={(v) => onUpdate('max_duration', v === '' ? undefined : v)}
+                min={0}
               />
             </div>
           </div>
@@ -406,6 +476,7 @@ const ActionFields: React.FC<ActionFieldsProps> = ({
         allOutputs={allOutputs}
         allCovers={allCovers}
         allBinarySensors={allBinarySensors}
+        allRemoteInputs={allRemoteInputs}
         allAreas={allAreas}
         showValidation={showValidation}
         excludeEntityId={excludeEntityId}

@@ -360,22 +360,28 @@ def normalize_board_name(name: str) -> str:
     return name
 
 
-def normalize_version(version: str) -> str:
+def normalize_version(version: str | float | int) -> str:
     """Normalize version to major.minor format.
+
+    Handles both string and numeric versions (YAML may parse
+    ``version: 0.7`` as float 0.7 instead of string "0.7").
 
     Examples:
         0.7.1 -> 0.7
         0.8.2 -> 0.8
         0.9   -> 0.9
     """
-    if not version:
-        return version
+    if not version and version != 0:
+        return str(version) if version is not None else ""
+
+    # YAML may parse e.g. 0.7 as float — convert to string first
+    version_str = str(version)
 
     # Split by dot and take only the first two parts (major.minor)
-    parts = version.split(".")
+    parts = version_str.split(".")
     if len(parts) >= 2:
         return f"{parts[0]}.{parts[1]}"
-    return version
+    return version_str
 
 
 def merge_board_config(config: dict) -> dict:
@@ -401,6 +407,11 @@ def merge_board_config(config: dict) -> dict:
     # Copy MCP configuration if not already defined
     if "mcp23017" not in config and "mcp23017" in board_config:
         config["mcp23017"] = board_config["mcp23017"]
+
+    # Copy DS2482 configuration if not already defined
+    if "ds2482" not in config and "ds2482" in board_config:
+        config["ds2482"] = board_config["ds2482"]
+
 
     # Process outputs
     if board_name == "cover" and "output" not in config:
@@ -1280,11 +1291,17 @@ def update_config_section(config_file: str, section: str, data: dict | list) -> 
     Returns:
         dict: Status response with success/error message
     """
+    import time
     from pathlib import Path
 
+    t_start = time.perf_counter()
     config_dir = Path(config_file).parent
 
-    _LOGGER.info(f"Updating section '{section}' with data: {data}")
+    data_size = len(str(data)) if data else 0
+    _LOGGER.info(
+        "[SAVE] START section='%s' data_size=%d bytes",
+        section, data_size,
+    )
 
     # Special handling for mcp23017 - convert hex strings to integers
     # This ensures YAML writes them as integers which are then read back as hex
@@ -1299,9 +1316,25 @@ def update_config_section(config_file: str, section: str, data: dict | list) -> 
                         with contextlib.suppress(ValueError):
                             entry["address"] = int(addr, 10)
 
+    # Strip WLED device metadata (effects/palettes/segments) from remote_devices.
+    # These are auto-discovered from WLED API and cached in .wled_cache.json,
+    # NOT stored in config.yaml (defense in depth).
+    if section == "remote_devices" and isinstance(data, list):
+        _wled_cache_fields = ("effects", "palettes", "segments")
+        for entry in data:
+            if isinstance(entry, dict):
+                wled = entry.get("wled")
+                if isinstance(wled, dict):
+                    for field in _wled_cache_fields:
+                        wled.pop(field, None)
+
     # Strip default values to keep YAML clean
+    t_strip = time.perf_counter()
     cleaned_data = strip_default_values(data, {}, section)
-    _LOGGER.info(f"Cleaned data (defaults removed): {cleaned_data}")
+    _LOGGER.info(
+        "[SAVE] strip_default_values took %.3fs",
+        time.perf_counter() - t_strip,
+    )
 
     # Custom YAML loader that preserves !include tags
     class IncludeLoader(SafeLoader):
@@ -1324,8 +1357,13 @@ def update_config_section(config_file: str, section: str, data: dict | list) -> 
 
     try:
         # Read current config.yaml with custom loader
+        t_load = time.perf_counter()
         with open(config_file, encoding="utf-8") as f:
             config_content = load(f, Loader=IncludeLoader)
+        _LOGGER.info(
+            "[SAVE] yaml.load(config.yaml) took %.3fs",
+            time.perf_counter() - t_load,
+        )
 
         if config_content is None:
             config_content = {}
@@ -1398,14 +1436,20 @@ def update_config_section(config_file: str, section: str, data: dict | list) -> 
 
                 # Save updated config.yaml (need to handle !include when saving)
                 # Read original file as text to preserve !include syntax
+                t_reread = time.perf_counter()
                 with open(config_file, encoding="utf-8") as f:
                     original_lines = f.readlines()
+                _LOGGER.info(
+                    "[SAVE] re-read config as text took %.3fs (%d lines)",
+                    time.perf_counter() - t_reread, len(original_lines),
+                )
 
                 # Find and replace the section in the original text
                 updated_lines = []
                 in_section = False
                 section_indent = 0
 
+                t_dump = time.perf_counter()
                 for line in original_lines:
                     stripped = line.strip()
                     # Check if this line starts the target section
@@ -1439,12 +1483,21 @@ def update_config_section(config_file: str, section: str, data: dict | list) -> 
                         # Skip lines that are part of the old section
                     else:
                         updated_lines.append(line)
+                _LOGGER.info(
+                    "[SAVE] yaml.dump(section) + line replace took %.3fs",
+                    time.perf_counter() - t_dump,
+                )
 
                 # Write updated config
+                t_write = time.perf_counter()
                 with open(config_file, "w", encoding="utf-8") as f:
                     f.writelines(updated_lines)
+                _LOGGER.info(
+                    "[SAVE] file write (config.yaml) took %.3fs",
+                    time.perf_counter() - t_write,
+                )
 
-                _LOGGER.info(f"Successfully updated section '{section}' in config.yaml")
+                _LOGGER.info("[SAVE] section '%s' inline update done", section)
         else:
             # Section doesn't exist - add it to config.yaml
             _LOGGER.info(f"Section '{section}' doesn't exist, adding to config.yaml")
@@ -1462,6 +1515,16 @@ def update_config_section(config_file: str, section: str, data: dict | list) -> 
 
             _LOGGER.info(f"Successfully added new section '{section}' to config.yaml")
 
+        t_total = time.perf_counter() - t_start
+        _LOGGER.info(
+            "[SAVE] DONE section='%s' total=%.3fs",
+            section, t_total,
+        )
+        if t_total > 1.0:
+            _LOGGER.warning(
+                "[SAVE] SLOW save detected: section='%s' took %.3fs",
+                section, t_total,
+            )
         return {"status": "success", "message": f"Section '{section}' saved successfully"}
 
     except Exception as e:

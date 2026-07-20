@@ -253,62 +253,13 @@ def make_reload_handler(manager: "Manager", section: str):
 # Self-registration — runs once when this module is first imported.
 # ---------------------------------------------------------------------------
 
-def _remote_output_effective_id(entry: dict) -> str | None:
-    """Return the effective ID the backend uses to register a remote output.
-
-    Mirrors the convention seen in journal logs ("Registered MQTT remote
-    output 'alarm_ropam_out6'") — explicit ``id`` wins, otherwise compose
-    ``f'{device_id}_{output_id}'``. Returns ``None`` if neither is usable.
-    """
-    explicit_id = entry.get("id")
-    if isinstance(explicit_id, str) and explicit_id:
-        return explicit_id
-    device_id = entry.get("device_id")
-    output_id = entry.get("output_id")
-    if isinstance(device_id, str) and device_id and isinstance(output_id, str) and output_id:
-        return f"{device_id}_{output_id}"
-    return None
-
-
-def enrich_config_response(config_data: dict) -> None:
-    """Add ``boneio_output`` alias to remote outputs in GET /api/config.
-
-    Although ``remote_outputs:`` is an upstream-owned section (ESPHome / MQTT
-    / WLED / CAN), upstream's OutputGroupForm filters group members by
-    ``output.boneio_output`` — which remote outputs never carry — and so it
-    silently drops every remote output from the picker. Until that's fixed
-    upstream we attach a transient ``boneio_output`` alias here and strip it
-    again on save (see ``strip_for_save``) so the YAML on disk stays clean.
-
-    Enriches the entire section regardless of ``remote_source`` — the user
-    expects *all* remote outputs in group pickers, and the alias semantics
-    (effective registration ID) are identical for every source.
-    """
-    remotes = config_data.get("remote_outputs")
-    if not isinstance(remotes, list):
-        return
-    for entry in remotes:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("boneio_output"):
-            continue
-        alias = _remote_output_effective_id(entry)
-        if alias is not None:
-            entry["boneio_output"] = alias
-
-
-def strip_for_save(section: str, data) -> None:
-    """Reverse the ``boneio_output`` alias before remote_outputs is written
-    back to YAML — idempotent contract: only strip when value still equals
-    the computed effective ID."""
-    if section != "remote_outputs" or not isinstance(data, list):
-        return
-    for entry in data:
-        if not isinstance(entry, dict):
-            continue
-        expected = _remote_output_effective_id(entry)
-        if expected is not None and entry.get("boneio_output") == expected:
-            entry.pop("boneio_output", None)
+# NOTE: the ``boneio_output`` alias enricher for remote_outputs was RETIRED in
+# the v1.5.0dev17 migration (Session 7). Upstream commit 78b9a2c teaches
+# OutputGroupForm to accept remote outputs natively via the ``remote_source``
+# + ``device_id`` fields (frontend concatenates output + remote_outputs and
+# filters on those), so our transient alias is no longer needed. The expander
+# module still needs its own enricher because MCP outputs carry neither
+# ``boneio_output`` nor ``remote_source`` — see boneio/modules/expander.
 
 
 def _register_self() -> None:

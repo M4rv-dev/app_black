@@ -255,13 +255,17 @@ class InputManager:
 
             # Reload: update existing input's actions and name
             if existing_input:
-                # Check if HA-relevant fields changed (name, area, mqtt_sequences)
+                # Check if HA-relevant fields changed (name, area, device_class, mqtt_sequences)
                 old_name = existing_input._name if hasattr(existing_input, "_name") else None
                 old_area = getattr(existing_input, "area", None)
+                old_device_class = getattr(existing_input, "_device_class", None)
+                new_device_class = gpio.get(DEVICE_CLASS)
                 old_mqtt_sequences = existing_input.mqtt_sequences if hasattr(existing_input, "mqtt_sequences") else {}
                 new_mqtt_sequences = gpio.get("mqtt_sequences", {})
                 ha_fields_changed = (
-                    (old_name != name) or (old_area != area) or (old_mqtt_sequences != new_mqtt_sequences)
+                    (old_name != name) or (old_area != area)
+                    or (old_device_class != new_device_class)
+                    or (old_mqtt_sequences != new_mqtt_sequences)
                 )
 
                 # Update actions (always - this is internal to the controller)
@@ -383,10 +387,15 @@ class InputManager:
 
             # Reload: update existing input's actions and name
             if existing_input:
-                # Check if HA-relevant fields changed (name, area)
+                # Check if HA-relevant fields changed (name, area, device_class)
                 old_name = existing_input._name if hasattr(existing_input, "_name") else None
                 old_area = getattr(existing_input, "area", None)
-                ha_fields_changed = (old_name != name) or (old_area != area)
+                old_device_class = getattr(existing_input, "_device_class", None)
+                new_device_class = gpio.get(DEVICE_CLASS)
+                ha_fields_changed = (
+                    (old_name != name) or (old_area != area)
+                    or (old_device_class != new_device_class)
+                )
 
                 # Update actions (always - this is internal to the controller)
                 existing_input.set_actions(actions=actions)
@@ -792,15 +801,17 @@ class InputManager:
         # Send event to MQTT for Home Assistant
         self._publish_input_event_to_mqtt(input_instance, event)
 
-        # Route to template entities (gate covers, alarm panels)
-        # This must happen before the publish_only check so initial state
-        # sync events reach gate covers and alarm panels.
-        self._manager.templates.on_input_event(event.entity_id, event.click_type)
-
-        # If publish_only is set, skip action execution (used for initial state sync)
+        # If publish_only is set, skip action execution AND template routing.
+        # publish_only events come from initial state sync (binary_sensor
+        # initial_send) — routing them to gate covers would cause spurious
+        # state transitions that trigger HA automations on every restart.
+        # Gate covers read sensor state silently during their own start().
         if event.publish_only:
-            _LOGGER.debug("Skipping action execution for %s (publish_only=True)", event.entity_id)
+            _LOGGER.debug("Skipping actions and template routing for %s (publish_only=True)", event.entity_id)
             return
+
+        # Route to template entities (gate covers, alarm panels)
+        self._manager.templates.on_input_event(event.entity_id, event.click_type)
 
         # Cancel pending delayed actions if this event matches delay_cancel_on
         # Check ALL click types' actions for delay_cancel_on (not just current click_type)

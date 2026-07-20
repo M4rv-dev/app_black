@@ -8,7 +8,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { OutputEntity, CoverEntity, BinarySensorEntity, AreaEntity } from '@/types/config';
-import EntitySelectDropdown from '../EntitySelectDropdown';
+import SearchableEntityPicker from '../SearchableEntityPicker';
 import type { EntityItem } from '../EntitySelectDropdown';
 import { validateCondition } from './helpers';
 
@@ -34,6 +34,8 @@ interface ActionConditionsProps {
   allCovers?: CoverEntity[];
   /** Available binary sensors for state condition entity selection */
   allBinarySensors?: BinarySensorEntity[];
+  /** Available remote inputs (binary sensors from ESPHome/CAN) for state conditions */
+  allRemoteInputs?: Array<Record<string, unknown>>;
   /** Available areas for displaying area names in entity selectors */
   allAreas?: AreaEntity[];
   /** Whether to show validation errors */
@@ -43,12 +45,14 @@ interface ActionConditionsProps {
 }
 
 const CONDITION_TYPES = ['time', 'date', 'state'] as const;
-const ENTITY_TYPES = ['binary_sensor', 'cover', 'output'] as const;
+const ENTITY_TYPES = ['binary_sensor', 'cover', 'output', 'remote_output', 'remote_input'] as const;
 
 const STATE_OPTIONS: Record<string, string[]> = {
   binary_sensor: ['is_on', 'is_off'],
   cover: ['is_open', 'is_closed'],
-  output: ['is_on', 'is_off']
+  output: ['is_on', 'is_off'],
+  remote_output: ['is_on', 'is_off'],
+  remote_input: ['is_on', 'is_off'],
 };
 
 /**
@@ -66,6 +70,7 @@ const ActionConditions: React.FC<ActionConditionsProps> = ({
   allOutputs = [],
   allCovers = [],
   allBinarySensors = [],
+  allRemoteInputs = [],
   allAreas = [],
   showValidation = false,
   excludeEntityId,
@@ -159,8 +164,9 @@ const ActionConditions: React.FC<ActionConditionsProps> = ({
   };
 
   /**
-   * Get available entity items for EntitySelectDropdown based on entity type.
+   * Get available entity items for SearchableEntityPicker based on entity type.
    * Returns items with id, name, area, and a badge indicating the entity type.
+   * For 'output', includes both local and remote outputs (with 📡 badge).
    */
   const getEntityItems = (entityType: string): EntityItem[] => {
     switch (entityType) {
@@ -196,12 +202,48 @@ const ActionConditions: React.FC<ActionConditionsProps> = ({
           .filter(item => !!item.id);
       case 'output':
         return allOutputs
-          .filter(o => !!(o.id))
-          .map(o => ({
-            id: o.id!,
-            name: o.name || o.id || '',
-            area: o.area,
-          }));
+          .filter(o => !o.remote_source && (o.boneio_output || o.id))
+          .map(o => {
+            const effectiveId = o.id || o.boneio_output || '';
+            return {
+              id: effectiveId,
+              name: o.name || effectiveId,
+              area: o.area,
+            };
+          })
+          .filter(item => !!item.id);
+      case 'remote_output':
+        return allOutputs
+          .filter(o => !!o.remote_source && (o.device_id || o.id))
+          .map(o => {
+            const effectiveId = o.id || `${o.device_id}_${o.output_id}`;
+            return {
+              id: effectiveId,
+              name: o.name || effectiveId,
+              area: o.area,
+              badge: `📡 ${o.device_id || o.remote_source}`,
+              badgeClass: 'badge-info',
+            };
+          })
+          .filter(item => !!item.id);
+      case 'remote_input':
+        return (allRemoteInputs || [])
+          .filter((ri: Record<string, unknown>) => {
+            const riId = (ri.id as string) || `${ri.device_id}_${ri.input_id}`;
+            return !!riId;
+          })
+          .map((ri: Record<string, unknown>) => {
+            const riId = (ri.id as string) || `${ri.device_id}_${ri.input_id}`;
+            const deviceName = (ri._device_name as string) || (ri.device_id as string) || '';
+            return {
+              id: riId,
+              name: (ri.name as string) || riId,
+              area: ri.area as string | undefined,
+              badge: deviceName ? `📡 ${deviceName}` : undefined,
+              badgeClass: 'badge-info',
+            };
+          })
+          .filter(item => !!item.id);
       default:
         return [];
     }
@@ -358,13 +400,20 @@ const ActionConditions: React.FC<ActionConditionsProps> = ({
                     <span className="label-text text-sm">{t('event_form.condition_entity_id')}</span>
                   </label>
                   {getEntityItems(condition.entity).length > 0 ? (
-                    <EntitySelectDropdown
+                  <SearchableEntityPicker
                       value={condition.entity_id || ''}
                       onChange={(value) => updateSingleCondition(index, 'entity_id', value)}
                       items={getEntityItems(condition.entity)}
                       allAreas={allAreas}
                       placeholder={t('event_form.condition_entity_id')}
+                      compact
+                      recentKey={`condition-${condition.entity}`}
                     />
+                  ) : (condition.entity === 'remote_input' || condition.entity === 'remote_output') ? (
+                    <div className="alert alert-info py-2 px-3 text-xs">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current shrink-0 w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                      <span>{t(`event_form.condition_entity_${condition.entity}_empty`)}</span>
+                    </div>
                   ) : (
                     <input
                       type="text"

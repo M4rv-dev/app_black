@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import SimpleTimePeriodInput from './widgets/SimpleTimePeriodInput';
 import AreaSelect from './widgets/AreaSelect';
+import SettingsToggleGroup from './widgets/SettingsToggleGroup';
 import { sanitizeId } from './helpers/idValidation';
 import { useTranslation } from '@/hooks/useTranslation';
 import { TabsBox } from '@/components/ui/tabs-box';
@@ -808,18 +809,17 @@ const OutputForm: React.FC<OutputFormProps> = ({
                   <div className="divider">{t('outputs.divider_options')}</div>
 
                   <div className="grid grid-cols-1 gap-4">
-                    <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-4">
-                      <legend className="fieldset-legend">{t('outputs.restore_state')}</legend>
-                      <label className="label cursor-pointer justify-start gap-4">
-                        <input
-                          type="checkbox"
-                          className="toggle toggle-primary"
-                          checked={data.restore_state === true}
-                          onChange={toggleRestoreState}
-                        />
-                        <span className="label-text">{getFieldDescription('restore_state')}</span>
-                      </label>
-                    </fieldset>
+                    <SettingsToggleGroup
+                      items={[
+                        {
+                          key: 'restore_state',
+                          label: t('outputs.restore_state'),
+                          description: getFieldDescription('restore_state'),
+                          checked: data.restore_state === true,
+                          onChange: () => toggleRestoreState(),
+                        },
+                      ]}
+                    />
 
                     <McpHardwareFields
                       data={data}

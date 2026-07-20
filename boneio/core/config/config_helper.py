@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from _collections_abc import dict_values
 from typing import TYPE_CHECKING, Any
+import time as _time
 
 if TYPE_CHECKING:
     from boneio.integration.homeassistant import HomeAssistantDiscoveryMessage
@@ -28,7 +29,6 @@ from boneio.const import (
     VALVE,
 )
 from boneio.core.system import get_serial_from_mac
-from boneio.core.utils.util import sanitize_mqtt_topic
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ class ConfigHelper:
         self,
         name: str = BONEIO,
         device_type: str = "boneIO Black",
+        version: str = "0.8",
         ha_discovery: bool = True,
         ha_discovery_prefix: str = HOMEASSISTANT,
         network_info: dict | None = None,
@@ -52,20 +53,29 @@ class ConfigHelper:
         pwa_name: str | None = None,
         ha_child_devices: bool = False,
         ha_child_devices_naming: str = "default",
+        serial_override: str | None = None,
     ):
         self._name = name
+        self._version = version
         
-        # Generate serial number from MAC - always required for topic prefix
-        self._serial_no = get_serial_from_mac(network_info or {})
+        # Generate real serial number from MAC - always required for physical identification
+        self._real_serial = get_serial_from_mac(network_info or {})
         
-        # Build fixed topic prefix: boneio/blk_{serial}
+        # If override is provided, use it as effective serial, otherwise use real MAC-based serial
+        if serial_override:
+            self._serial_no = serial_override
+            _LOGGER.warning("Serial override active: effective=%s, real=%s", serial_override, self._real_serial)
+        else:
+            self._serial_no = self._real_serial
+        
+        # Build fixed topic prefix: boneio/blk_{serial} using effective serial
         # This is no longer configurable - always uses this format
         if self._serial_no:
             self._topic_prefix = f"boneio/{self._serial_no}"
         else:
             # Fallback if MAC not available (should rarely happen)
             self._topic_prefix = "boneio/blk_unknown"
-            _LOGGER.warning("Could not determine serial number from MAC, using fallback topic prefix")
+            _LOGGER.warning("Could not determine serial number, using fallback topic prefix")
 
         # PWA short name for Android home screen (max 12 chars)
         if pwa_name:
@@ -89,6 +99,7 @@ class ConfigHelper:
         self._web_port = web_port
         self._proxy_port = proxy_port
         self._fetch_old_discovery = None
+
         self._autodiscovery_messages = {
             SWITCH: {},
             LIGHT: {},
@@ -162,7 +173,8 @@ class ConfigHelper:
 
     @property
     def serial_number(self) -> str:
-        return self._serial_no
+        """Get effective device serial number (e.g., 'blk_abc123')."""
+        return self._serial_no or "blk_unknown"
 
     @property
     def proxy_port(self) -> int | None:
@@ -183,9 +195,16 @@ class ConfigHelper:
         return self._topic_prefix
 
     @property
-    def serial_no(self) -> str:
-        """Get device serial number (e.g., 'blk_abc123')."""
-        return self._serial_no or "blk_unknown"
+    def real_serial(self) -> str:
+        """Real serial from MAC — for HA device_info and UI display."""
+        return self._real_serial or "blk_unknown"
+
+    @property
+    def serial_override(self) -> str | None:
+        """Return override value if active, None otherwise."""
+        if self._serial_no != self._real_serial:
+            return self._serial_no
+        return None
 
     @property
     def pwa_name(self) -> str:
@@ -206,8 +225,14 @@ class ConfigHelper:
         return self._ha_discovery
 
     @property
+    def version(self) -> str:
+        """Get the board version."""
+        return self._version
+
+    @property
     def ha_discovery_prefix(self) -> str:
         return self._ha_discovery_prefix
+
 
     @property
     def send_boneio_autodiscovery(self) -> bool:
@@ -381,16 +406,20 @@ class ConfigHelper:
         return self._config_cache
 
     def reload_config(self) -> dict[str, Any]:
-        """Reload configuration from file and update cache.
+        """Reload configuration from YAML file (fast path for hot-reload).
         
-        Loads config from file using load_config_from_file() which tries the
-        disk cache first (~0.5s) and falls back to full Cerberus validation
-        (~20s) on cache miss. This method does NOT wait for any background
-        cache rebuild — it's independent.
+        Uses load_yaml_file() + merge_board_config() to read the config
+        directly from YAML without running Cerberus validation. This is
+        much faster (~0.5-1s) than the full validation path (~20s on BB).
         
-        NOTE: This method may take up to ~20s on BeagleBone if disk cache
-        is not available. Callers should run it via asyncio.to_thread() to
-        avoid blocking the event loop.
+        Full Cerberus validation is only needed at:
+        - Application startup (via load_config_from_file)
+        - Background disk cache rebuild (debounced after config changes)
+        - Monaco YAML editor validation (load_config_from_string)
+        
+        NOTE: Migrations are not applied here — they run at startup and
+        are idempotent (version-gated). Config saved via the UI always
+        has current schema version.
         
         Returns:
             dict: Reloaded configuration dictionary
@@ -398,8 +427,26 @@ class ConfigHelper:
         Raises:
             ValueError: If config_file_path is not set
         """
-        _LOGGER.info("Reloading config from file: %s", self._config_file_path)
-        return self.get_config(force_reload=True)
+
+        if self._config_file_path is None:
+            raise ValueError("config_file_path not set in ConfigHelper")
+
+        _t0 = _time.monotonic()
+        _LOGGER.info("Fast-reloading config from: %s", self._config_file_path)
+
+        from boneio.core.config.yaml_util import load_yaml_file, merge_board_config
+
+        config_yaml = load_yaml_file(self._config_file_path)
+        if config_yaml is None:
+            raise ValueError(f"Failed to load config from: {self._config_file_path}")
+
+        merged = merge_board_config(config_yaml)
+        self._config_cache = merged
+
+        elapsed = _time.monotonic() - _t0
+        _LOGGER.info("Fast config reload completed in %.2fs", elapsed)
+
+        return merged
 
     def get_section(self, section_name: str, force_reload: bool = False) -> Any:
         """Get a specific configuration section.

@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import { suppressNextPointerRelease } from '@/utils/longPress';
 
 interface LongPressWrapperProps {
     children: React.ReactNode;
@@ -14,8 +15,15 @@ interface LongPressWrapperProps {
  * Selector for interactive elements that should NOT trigger long press.
  * Includes buttons, links, form controls, and Radix UI combobox/listbox portals.
  */
-const INTERACTIVE_SELECTOR = 'button, a, input, select, textarea, [role="combobox"], [role="listbox"], [role="option"], [data-radix-select-viewport]';
+const INTERACTIVE_SELECTOR = 'button, a, input, select, textarea, [role="combobox"], [role="listbox"], [role="option"], [data-radix-select-viewport], [data-select="trigger"], [data-popover]';
 
+/**
+ * Wraps children with long-press detection for both mouse and touch.
+ *
+ * After holding for 500ms `onLongPress` fires immediately (instant feedback).
+ * The trailing pointer-release events are suppressed so they don't
+ * dismiss any dialog that `onLongPress` opened.
+ */
 export const LongPressWrapper: React.FC<LongPressWrapperProps> = ({
     children,
     onLongPress,
@@ -29,6 +37,9 @@ export const LongPressWrapper: React.FC<LongPressWrapperProps> = ({
     const isLongPress = useRef(false);
 
     const handlePressStart = (e: React.MouseEvent | React.TouchEvent) => {
+        // Only react to left mouse button (button 0); ignore right-click (2) and middle (1).
+        if ('button' in e && e.button !== 0) return;
+
         // Ignore clicks on interactive elements (buttons, links, form controls, dropdowns)
         if ((e.target as Element).closest(INTERACTIVE_SELECTOR)) return;
 
@@ -39,8 +50,20 @@ export const LongPressWrapper: React.FC<LongPressWrapperProps> = ({
         isLongPress.current = false;
         longPressTimer.current = setTimeout(() => {
             isLongPress.current = true;
+            // Suppress the trailing pointer-release so @base-ui Dialog
+            // backdrop doesn't dismiss the dialog we're about to open.
+            suppressNextPointerRelease();
             onLongPress();
         }, 500);
+
+        // Safety: clear the timer on window-level release events (capture phase).
+        // This handles the case where mouseup lands on a Portal element
+        // (e.g. Base UI Select dropdown) outside this wrapper's DOM tree,
+        // or if the select trigger calls stopPropagation() during bubbling.
+        const clearOnRelease = () => handlePressEnd();
+        window.addEventListener('pointerup', clearOnRelease, { capture: true, once: true });
+        window.addEventListener('mouseup', clearOnRelease, { capture: true, once: true });
+        window.addEventListener('touchend', clearOnRelease, { capture: true, once: true });
     };
 
     const handlePressEnd = () => {

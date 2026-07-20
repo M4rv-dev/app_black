@@ -16,6 +16,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 import ActionFields, { validateAction, cleanActionFields } from './ActionFields';
 import AiConfigAssistant from './AiConfigAssistant';
 import AreaSelect from './widgets/AreaSelect';
+import SettingsToggleGroup from './widgets/SettingsToggleGroup';
 import { TabsBox } from '@/components/ui/tabs-box';
 import SimpleTimePeriodInput from './widgets/SimpleTimePeriodInput';
 import {
@@ -60,11 +61,15 @@ interface RemoteInputFormProps {
   allAreas?: AreaEntity[];
   allRemoteDevices?: RemoteDeviceEntity[];
   allBinarySensors?: BinarySensorEntity[];
+  /** Remote inputs for condition entity picker */
+  allRemoteInputs?: Array<Record<string, unknown>>;
   onValidationChange?: (hasErrors: boolean) => void;
   attemptedSubmit?: boolean;
   savedOutputs?: OutputEntity[];
   savedOutputGroups?: any[];
   savedCovers?: CoverEntity[];
+  /** Optional initial tab (e.g., 'single', 'double', 'long', 'pressed'). */
+  initialTab?: 'basic' | 'single' | 'double' | 'triple' | 'long' | 'sequences' | 'advanced' | 'pressed' | 'released';
 }
 
 /* ------------------------------------------------------------------ */
@@ -80,11 +85,13 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
   allAreas = [],
   allRemoteDevices = [],
   allBinarySensors = [],
+  allRemoteInputs = [],
   onValidationChange,
   attemptedSubmit = false,
   savedOutputs,
   savedOutputGroups,
   savedCovers,
+  initialTab,
 }) => {
   const { t } = useTranslation();
 
@@ -93,19 +100,27 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
     data.mode === 'event' || data._type === 'event' ? 'event' : 'binary_sensor';
 
   // State for active tab — differs per mode
-  const [bsTab, setBsTab] = useState<'basic' | 'pressed' | 'released'>('basic');
+  const [bsTab, setBsTab] = useState<'basic' | 'pressed' | 'released'>(
+    initialTab === 'pressed' || initialTab === 'released' ? initialTab : 'basic'
+  );
   const [evTab, setEvTab] = useState<
     'basic' | 'single' | 'double' | 'triple' | 'long' | 'sequences' | 'advanced'
-  >('basic');
+  >(
+    initialTab && ['single', 'double', 'triple', 'long', 'sequences', 'advanced'].includes(initialTab)
+      ? initialTab as any
+      : 'basic'
+  );
 
   /* ---------- schema-derived enums ---------- */
   const deviceClassOptions =
     schema?.items?.properties?.device_class?.enum || DEFAULT_DEVICE_CLASSES;
-  const actionTypeOptions =
+  const rawActionTypeOptions =
     schema?.items?.properties?.actions?.properties?.single?.items?.properties?.action?.enum ||
     schema?.items?.properties?.actions?.properties?.pressed?.items?.properties?.action?.enum || [
       'mqtt', 'output', 'cover', 'output_over_mqtt', 'cover_over_mqtt', 'remote_output', 'remote_cover',
     ];
+  // Deduplicate: schema may provide both uppercase and lowercase variants
+  const actionTypeOptions = [...new Set(rawActionTypeOptions.map((o: string) => o.toLowerCase()))] as string[];
   const actionOutputOptions =
     schema?.items?.properties?.actions?.properties?.single?.items?.properties?.action_output?.enum ||
     schema?.items?.properties?.actions?.properties?.pressed?.items?.properties?.action_output?.enum || [
@@ -215,7 +230,9 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
       savedCovers={savedCovers}
       clickType={type as 'pressed' | 'released' | 'single' | 'double' | 'triple' | 'long' | 'double_then_long' | 'single_then_long' | 'double_then_single'}
       allBinarySensors={allBinarySensors}
+      allRemoteInputs={allRemoteInputs}
       excludeEntityId={data.id}
+      preferredArea={data.area}
     />
   );
 
@@ -417,35 +434,24 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
       {/* ---- Options ---- */}
       <div className="divider">{t('settings.options')}</div>
 
-      <div className="grid grid-cols-1 gap-4">
-        {/* Forward state to HA — default OFF */}
-        <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-4">
-          <legend className="fieldset-legend">{t('inputs.forward_to_ha')}</legend>
-          <label className="label cursor-pointer justify-start gap-4">
-            <input
-              type="checkbox"
-              className="toggle toggle-primary"
-              checked={data.show_in_ha === true}
-              onChange={(e) => updateField('show_in_ha', e.target.checked)}
-            />
-            <span className="label-text wrap-break-word">{t('inputs.forward_to_ha_hint')}</span>
-          </label>
-        </fieldset>
-
-        {/* Inverted */}
-        <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-4">
-          <legend className="fieldset-legend">{t('inputs.inverted')}</legend>
-          <label className="label cursor-pointer justify-start gap-4">
-            <input
-              type="checkbox"
-              className="toggle toggle-primary"
-              checked={data.inverted === true}
-              onChange={(e) => updateField('inverted', e.target.checked)}
-            />
-            <span className="label-text">{t('inputs.inverted_hint')}</span>
-          </label>
-        </fieldset>
-      </div>
+      <SettingsToggleGroup
+        items={[
+          {
+            key: 'show_in_ha',
+            label: t('inputs.forward_to_ha'),
+            description: t('inputs.forward_to_ha_hint'),
+            checked: data.show_in_ha === true,
+            onChange: (checked) => updateField('show_in_ha', checked),
+          },
+          {
+            key: 'inverted',
+            label: t('inputs.inverted'),
+            description: t('inputs.inverted_hint'),
+            checked: data.inverted === true,
+            onChange: (checked) => updateField('inverted', checked),
+          },
+        ]}
+      />
     </div>
   );
 
@@ -680,18 +686,17 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
             </div>
 
             {/* Enable triple click */}
-            <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-4">
-              <legend className="fieldset-legend">{t('event_form.enable_triple_click')}</legend>
-              <label className="label cursor-pointer justify-start gap-4">
-                <input
-                  type="checkbox"
-                  className="toggle toggle-primary"
-                  checked={data.enable_triple_click === true}
-                  onChange={(e) => updateField('enable_triple_click', e.target.checked)}
-                />
-                <span className="label-text">{t('event_form.enable_triple_click_hint')}</span>
-              </label>
-            </fieldset>
+            <SettingsToggleGroup
+              items={[
+                {
+                  key: 'enable_triple_click',
+                  label: t('event_form.enable_triple_click'),
+                  description: t('event_form.enable_triple_click_hint'),
+                  checked: data.enable_triple_click === true,
+                  onChange: (checked) => updateField('enable_triple_click', checked),
+                },
+              ]}
+            />
 
             {/* Long press MQTT mode */}
             <div className="form-control">
@@ -723,14 +728,14 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
             <div className="form-control">
               <SimpleTimePeriodInput
                 label={t('event_form.max_long_press_duration')}
-                value={data.max_long_press_duration || '120s'}
+                value={data.max_long_press_duration || '30s'}
                 onChange={(v) => updateField('max_long_press_duration', v)}
-                maximum={600000}
+                maximum={30000}
                 minimum={1000}
                 allowedUnits={['s']}
               />
               <label className="label">
-                <span className="label-text-alt">{t('event_form.max_long_press_duration_hint')} ({t('common.default')}: 120s)</span>
+                <span className="label-text-alt">{t('event_form.max_long_press_duration_hint')} ({t('common.default')}: 30s)</span>
               </label>
             </div>
 
@@ -743,7 +748,7 @@ const RemoteInputForm: React.FC<RemoteInputFormProps> = ({
                   updateField('double_click_duration', '220ms');
                   updateField('long_press_duration', '400ms');
                   updateField('sequence_window_duration', '500ms');
-                  updateField('max_long_press_duration', '120s');
+                  updateField('max_long_press_duration', '30s');
                 }}
               >
                 {t('event_form.restore_defaults')}

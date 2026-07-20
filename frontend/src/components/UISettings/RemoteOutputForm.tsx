@@ -13,6 +13,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
 import AreaSelect from './widgets/AreaSelect';
+import SettingsToggleGroup from './widgets/SettingsToggleGroup';
 import SimpleTimePeriodInput from './widgets/SimpleTimePeriodInput';
 import { sanitizeId } from './helpers/idValidation';
 import { TabsBox } from '@/components/ui/tabs-box';
@@ -108,34 +109,56 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
 
   /* ---------- device output lists ---------- */
   const selectedDevice = allRemoteDevices.find(d => d.id === data.device_id);
-  const esphomeApi = (selectedDevice as any)?.esphome_api || selectedDevice;
+  const isWledDevice = selectedDevice?.protocol === 'wled';
+  const esphomeApi = selectedDevice?.esphome_api;
+
+  // ESPHome / MQTT switches & lights
   const availableSwitches: Array<{ id: string; name?: string }> =
-    esphomeApi?.switches || [];
+    isWledDevice ? [] : (esphomeApi?.switches || selectedDevice?.mqtt?.outputs || []);
   const availableLights: Array<{ id: string; name?: string; supports_brightness?: boolean }> =
-    esphomeApi?.lights || [];
+    isWledDevice ? [] : (esphomeApi?.lights || []);
+
   // MQTT generic outputs declared on the device — same dropdown UX as ESPHome.
   const mqttOutputs: Array<{ id: string; name?: string; output_type?: string }> =
     (data.remote_source === 'mqtt' ? (selectedDevice as any)?.mqtt?.outputs : []) || [];
+
+  // WLED segments + "main" (whole device)
+  const wledConfig = selectedDevice?.wled;
+  const wledSegments: Array<{ id: string; name: string; supports_brightness: boolean }> =
+    isWledDevice && wledConfig?.segments
+      ? [
+          { id: 'main', name: t('remote_outputs.wled_main'), supports_brightness: true },
+          ...wledConfig.segments.map((seg) => ({
+            id: String(seg.id),
+            name: seg.name || `${t('remote_outputs.wled_segment')} ${seg.id}${seg.len ? ` (${seg.len} LEDs)` : ''}`,
+            supports_brightness: true,
+          })),
+        ]
+      : [];
+
   const allAvailableOutputs = [
     ...availableSwitches.map(s => ({ ...s, _type: 'switch' as const })),
     ...availableLights.map(l => ({ ...l, _type: 'light' as const })),
     ...mqttOutputs.map(o => ({ ...o, _type: (o.output_type === 'light' ? 'light' : 'switch') as 'switch' | 'light' })),
+    ...wledSegments.map(w => ({ ...w, _type: 'light' as const })),
   ];
 
   /* ---------- selected output capabilities ---------- */
   const selectedOutput = allAvailableOutputs.find(o => o.id === data.output_id);
   const isLightEntity = selectedOutput?._type === 'light';
   const selectedLight = isLightEntity
-    ? availableLights.find(l => l.id === data.output_id)
+    ? [...availableLights, ...wledSegments].find(l => l.id === data.output_id)
     : null;
-  const supportsBrightness = !!(selectedLight as any)?.supports_brightness;
+  const supportsBrightness = !!selectedLight?.supports_brightness;
   // Lights with brightness cannot be degraded to plain switch
-  const outputTypeLocked = isLightEntity && supportsBrightness;
+  const outputTypeLocked = (isLightEntity && supportsBrightness) || isWledDevice;
 
   /* ---------- devices with outputs ----------
      Include ESPHome devices with switches/lights AND generic-MQTT
      devices whose mqtt.outputs catalog has at least one entry. */
   const devicesWithOutputs = allRemoteDevices.filter((device) => {
+    // WLED devices always have at least "main" output
+    if (device.protocol === 'wled') return true;
     const api = (device as any)?.esphome_api || device;
     const sw = api?.switches || [];
     const li = api?.lights || [];
@@ -211,7 +234,7 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
                         const deviceId = v === '_none_' ? '' : v;
                         const device = allRemoteDevices.find(d => d.id === deviceId);
                         // Auto-set remote_source from device protocol
-                        const protocol = (device as any)?.protocol || 'esphome_api';
+                        const protocol = device?.protocol || 'esphome_api';
                         onChange({ ...data, device_id: deviceId, output_id: '', remote_source: protocol });
                       }}
                     >
@@ -221,11 +244,14 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
                       <SelectContent>
                         <SelectItem value="_none_">{t('remote_devices.select_device')}</SelectItem>
                         {devicesWithOutputs.map((device) => {
-                          const protocolLabel =
-                            (device as any).protocol === 'esphome_api' ? 'ESPHome API' :
-                            (device as any).protocol === 'wled' ? 'WLED' :
-                            (device as any).protocol === 'mqtt' ? 'MQTT' :
-                            (device as any).protocol || '';
+                          const protocolLabels: Record<string, string> = {
+                            esphome_api: 'ESPHome API',
+                            wled: 'WLED',
+                            mqtt: 'MQTT',
+                          };
+                          const protocolLabel = device.protocol
+                            ? (protocolLabels[device.protocol] || device.protocol)
+                            : '';
                           return (
                             <SelectItem key={device.id} value={device.id}>
                               {device.name || device.id}{protocolLabel ? ` (${protocolLabel})` : ''}
@@ -300,6 +326,18 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
                             {mqttOutputs.map((mo) => (
                               <SelectItem key={`mq_${mo.id}`} value={mo.id}>
                                 📡 {mo.name ? `${mo.name} (${mo.id})` : mo.id}
+                              </SelectItem>
+                            ))}
+                          </>
+                        )}
+                        {wledSegments.length > 0 && (
+                          <>
+                            <SelectItem value="_header_wled" disabled>
+                              🌈 {t('remote_outputs.wled_segments_header')}
+                            </SelectItem>
+                            {wledSegments.map((seg) => (
+                              <SelectItem key={`wled_${seg.id}`} value={seg.id}>
+                                {seg.id === 'main' ? '🎨' : '🌈'} {seg.name}
                               </SelectItem>
                             ))}
                           </>
@@ -398,21 +436,17 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
                 {/* ---- Options ---- */}
                 <div className="divider">{t('settings.options')}</div>
 
-                <div className="grid grid-cols-1 gap-4">
-                  {/* Forward to HA — default OFF */}
-                  <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-4">
-                    <legend className="fieldset-legend">{t('inputs.forward_to_ha')}</legend>
-                    <label className="label cursor-pointer justify-start gap-4">
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-primary"
-                        checked={data.show_in_ha === true}
-                        onChange={(e) => updateField('show_in_ha', e.target.checked)}
-                      />
-                      <span className="label-text wrap-break-word">{t('remote_outputs.forward_to_ha_hint')}</span>
-                    </label>
-                  </fieldset>
-                </div>
+                <SettingsToggleGroup
+                  items={[
+                    {
+                      key: 'show_in_ha',
+                      label: t('inputs.forward_to_ha'),
+                      description: t('remote_outputs.forward_to_ha_hint'),
+                      checked: data.show_in_ha === true,
+                      onChange: (checked) => updateField('show_in_ha', checked),
+                    },
+                  ]}
+                />
               </div>
             ),
           },
@@ -463,25 +497,26 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
                 {/* --- Adjustable Duration --- */}
                 <div className="divider">{t('outputs.divider_adjustable_duration')}</div>
 
-                <div className="grid grid-cols-1 gap-4">
-                  <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-4">
-                    <legend className="fieldset-legend">{t('outputs.adjustable_duration_label')}</legend>
-                    <label className={`label cursor-pointer justify-start gap-4 ${data.momentary_turn_on ? 'opacity-50' : ''}`}>
-                      <input
-                        type="checkbox"
-                        className="toggle toggle-primary"
-                        checked={data.adjustable_duration === true}
-                        onChange={() => updateField('adjustable_duration', !data.adjustable_duration)}
-                        disabled={!!data.momentary_turn_on}
-                      />
-                      <span className="label-text">{t('outputs.adjustable_duration_desc')}</span>
-                    </label>
+                  <div className="space-y-2">
+                    <SettingsToggleGroup
+                      items={[
+                        {
+                          key: 'adjustable_duration',
+                          label: t('outputs.adjustable_duration_label'),
+                          description: t('outputs.adjustable_duration_desc'),
+                          checked: data.adjustable_duration === true,
+                          onChange: () => updateField('adjustable_duration', !data.adjustable_duration),
+                          disabled: !!data.momentary_turn_on,
+                        },
+                      ]}
+                    />
                     {data.momentary_turn_on && (
-                      <p className="text-xs text-warning mt-1 px-1">
+                      <p className="text-xs text-warning px-1">
                         {t('outputs.adjustable_duration_conflict')}
                       </p>
                     )}
-                  </fieldset>
+                  </div>
+
 
                   {data.adjustable_duration && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pl-2 border-l-2 border-primary/30">
@@ -537,7 +572,6 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
                       </div>
                     </div>
                   )}
-                </div>
 
                 <div className="alert alert-info">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current shrink-0 w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
@@ -645,20 +679,17 @@ const RemoteOutputForm: React.FC<RemoteOutputFormProps> = ({
 
                 {/* Enforce Interlock — visible when interlock_group is set */}
                 {interlockValue && (
-                  <div className="grid grid-cols-1 gap-4 mt-2">
-                    <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-4">
-                      <legend className="fieldset-legend">{t('remote_outputs.enforce_interlock')}</legend>
-                      <label className="label cursor-pointer justify-start gap-4">
-                        <input
-                          type="checkbox"
-                          className="toggle toggle-warning"
-                          checked={data.enforce_interlock === true}
-                          onChange={(e) => updateField('enforce_interlock', e.target.checked)}
-                        />
-                        <span className="label-text wrap-break-word">{t('remote_outputs.enforce_interlock_hint')}</span>
-                      </label>
-                    </fieldset>
-                  </div>
+                  <SettingsToggleGroup
+                    items={[
+                      {
+                        key: 'enforce_interlock',
+                        label: t('remote_outputs.enforce_interlock'),
+                        description: t('remote_outputs.enforce_interlock_hint'),
+                        checked: data.enforce_interlock === true,
+                        onChange: (checked) => updateField('enforce_interlock', checked),
+                      },
+                    ]}
+                  />
                 )}
 
                 <div className="alert alert-info">

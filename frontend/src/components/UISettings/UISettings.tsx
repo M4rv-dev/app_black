@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import axios from '@/api/axios';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import * as yaml from 'js-yaml';
@@ -19,6 +19,9 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { SectionContent, SettingsSidebar, SectionHeader } from './components';
 import { DEFAULT_ADDRESSES } from './Mcp23017Form';
 import { filterOutputItemFields } from './helpers/configDataUtils';
+
+/** Lazy-loaded binding matrix component (tool section, not schema-driven). */
+const BindingMatrix = lazy(() => import('./BindingMatrix'));
 
 /**
  * UISettings - Form-based configuration editor with tabs for each config section
@@ -67,7 +70,14 @@ export default function UISettings() {
   const [isReloading, setIsReloading] = useState(false);
   const [restartRequired, setRestartRequired] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  // On mobile, start sidebar closed when arriving with a section URL or deep link
+  // so content is immediately visible (e.g. from InputsView long-press → "Go to settings")
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      return !section && !searchParams.get('edit');
+    }
+    return true;
+  });
   const [schemaLoaded, setSchemaLoaded] = useState(false);
   const [loxFormValid, setLoxFormValid] = useState(true);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -108,6 +118,11 @@ export default function UISettings() {
   // Function to navigate to a section
   const navigateToSection = (sectionName: string) => {
     navigate(`/settings/${sectionName}`);
+    // Scroll content to top so the new section starts at the top
+    window.scrollTo({ top: 0 });
+    if (contentRef.current) {
+      contentRef.current.scrollTop = 0;
+    }
     // On mobile: close sidebar accordion so content is immediately visible
     if (window.innerWidth < 1024) {
       setIsSidebarOpen(false);
@@ -689,6 +704,7 @@ export default function UISettings() {
       'remote_outputs',
       'remote_sensors',
       'board_sensors',
+      'ds2482',
     ];
     const defaultValue = arraySections.includes(sectionName) ? [] : {};
     const originalValue =
@@ -859,7 +875,9 @@ export default function UISettings() {
         // Save each YAML key separately
         for (const key of yamlKeys) {
           console.log(`📤 Saving composite key ${key}:`, buckets[key]);
-          await axios.put(`/api/config/${key}`, buckets[key]);
+          await axios.put(`/api/config/${key}`, buckets[key], {
+            timeout: 15000, // Large configs can take seconds on ARM
+          });
         }
 
         // Determine reload strategy based on section type
@@ -880,7 +898,9 @@ export default function UISettings() {
               setIsReloading(true);
               console.log(`🔄 Granular reload for local_inputs: ${sectionsToReload.join(', ')}`);
               await axios.post('/api/config/reload', sectionsToReload, { timeout: 30000 });
-              await loadConfiguration();
+              // No need to call loadConfiguration() — formData already has
+              // the correct values (we just sent them). Server-side reload
+              // applies the changes to running entities (GPIO, MQTT, HA Discovery).
               console.log(`✅ Reloaded: ${sectionsToReload.join(', ')}`);
             } catch (reloadError) {
               console.warn('⚠️ Error reloading local_inputs:', reloadError);
@@ -912,7 +932,9 @@ export default function UISettings() {
       const bodyData = JSON.stringify(minimalConfig);
       console.log('📤 Sending to backend:', bodyData);
 
-      const response = await axios.put(`/api/config/${sectionName}`, minimalConfig);
+      const response = await axios.put(`/api/config/${sectionName}`, minimalConfig, {
+        timeout: 15000, // Large configs (e.g. WLED effects/palettes) can take seconds on ARM
+      });
       const result = response.data;
 
       if (response.status === 200) {
@@ -1312,11 +1334,39 @@ export default function UISettings() {
         isSidebarOpen={isSidebarOpen}
         onSidebarToggle={setIsSidebarOpen}
         onNavigate={navigateToSection}
+        onRestore={() => {
+          restoreSection(activeSection);
+          if (activeSection === 'mqtt') restoreSection('lox_udp');
+        }}
+        onSave={async () => {
+          if (activeSection === 'mqtt') {
+            if (unsavedChanges['mqtt']) await saveSection('mqtt');
+            if (unsavedChanges['lox_udp']) await saveSection('lox_udp');
+          } else {
+            await saveSection(activeSection);
+          }
+        }}
+        saveDisabled={activeSection === 'mqtt' && unsavedChanges['lox_udp'] && !loxFormValid}
       />
 
       {/* Main content area */}
-      <div ref={contentRef} className="flex-1 flex flex-col overflow-hidden lg:min-h-0">
-        {activeSection_data && (
+      <div ref={contentRef} className="flex-1 flex flex-col overflow-hidden lg:min-h-0 pb-14 lg:pb-0">
+        {/* Tool sections (not schema-driven) */}
+        {activeSection === 'binding_matrix' ? (
+          <Suspense fallback={<div className="flex justify-center py-12"><span className="loading loading-ring loading-lg text-primary" /></div>}>
+            <div className="flex-1 overflow-y-auto">
+              <BindingMatrix
+                formData={formData}
+                sections={sections}
+                onSaveSection={saveSection}
+                onUpdateFormData={(section: string, data: any) => {
+                  setFormData(prev => ({ ...prev, [section]: data }));
+                  setUnsavedChanges(prev => ({ ...prev, [section]: true }));
+                }}
+              />
+            </div>
+          </Suspense>
+        ) : activeSection_data && (
           <>
             {/* Header */}
             <SectionHeader

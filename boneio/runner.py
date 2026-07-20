@@ -154,7 +154,9 @@ async def async_run(
     _config_helper = ConfigHelper(
         name=main_config.get(NAME, BONEIO),
         device_type=main_config.get("device_type", "boneIO Black"),
+        version=main_config.get("version", "0.8"),
         network_info=network_state,
+
         is_web_active=web_active,
         web_port=web_config.get("port", 8090),
         proxy_port=web_config.get("proxy_port"),
@@ -168,6 +170,7 @@ async def async_run(
         pwa_name=web_config.get("cloud", {}).get("pwa_name"),
         ha_child_devices=main_config.get("ha_child_devices", False),
         ha_child_devices_naming=main_config.get("ha_child_devices_naming", "default"),
+        serial_override=main_config.get("serial_override"),
     )
 
     # Load areas configuration
@@ -356,7 +359,7 @@ async def async_run(
     cloud_reg = None
     if _config_helper.cloud_registration:
         local_ip = network_state.get("ip", "")
-        serial = _config_helper.serial_no
+        serial = _config_helper.serial_number
         if local_ip and serial:
             cloud_reg = CloudRegistration(
                 serial_number=serial,
@@ -417,6 +420,17 @@ async def async_run(
         return 1
     finally:
         _LOGGER.info("Cleaning up resources...")
+
+        # Cancel pending deferred state saves and write final state synchronously.
+        # This MUST happen before event_bus.stop() which may trigger sigterm
+        # listeners that call save_attribute() (e.g. covers turning off).
+        # On Python 3.13+, the default executor is shut down after async_run returns,
+        # so any call_later(1, save_state) that fires later would crash with
+        # RuntimeError: Executor shutdown has been called.
+        try:
+            manager._state_manager.cancel_pending_and_save()
+        except Exception as e:
+            _LOGGER.error(f"Error cancelling pending state saves: {e}")
 
         # Trigger web server shutdown if it's running
         if web_server and hasattr(web_server, "trigger_shutdown"):

@@ -52,8 +52,11 @@ from boneio.core.manager.templates import TemplateManager
 from boneio.core.manager.update import UpdateManager
 from boneio.core.messaging import MessageBus
 from boneio.core.state import StateManager
+from boneio.core.utils.timeperiod import parse_time_to_ms, parse_time_to_seconds
+from boneio.components.output.remote import RemoteOutputBase
+from boneio.core.remote.wled import WLEDRemoteDevice
 from boneio.hardware.i2c.bus import SMBus2I2C
-from boneio.migrations import MigrationRunner, MigrationStatus
+from boneio.migrations import MigrationRunner
 
 if TYPE_CHECKING:
     pass
@@ -257,7 +260,7 @@ class Manager:
         self.remote_devices = RemoteDeviceManager(
             message_bus=message_bus,
             remote_devices_config=remote_devices,
-            own_serial=config_helper.serial_no,
+            own_serial=config_helper.serial_number,
             name=self.config_helper.name,
         )
 
@@ -642,7 +645,7 @@ class Manager:
             ha_type: Home Assistant entity type (sensor, light, cover …).
             payload: Ready-to-publish discovery payload dict.
         """
-        topic = f"{self._config_helper.ha_discovery_prefix}/{ha_type}/{self._config_helper.serial_no}/{id}/config"
+        topic = f"{self._config_helper.ha_discovery_prefix}/{ha_type}/{self._config_helper.serial_number}/{id}/config"
         _LOGGER.debug("Sending HA discovery for %s entity %s.", ha_type, id)
         self._config_helper.add_autodiscovery_msg(topic=topic, ha_type=ha_type, payload=payload)
         self.send_message(topic=topic, payload=payload, retain=True)
@@ -674,23 +677,19 @@ class Manager:
             """Copy long press meta fields (duration thresholds, repeat), delay, and conditions to parsed action."""
             for key in ("min_duration", "max_duration"):
                 if action_definition.get(key) is not None:
-                    parsed_action[key] = action_definition[key]
+                    parsed_action[key] = parse_time_to_ms(action_definition[key], None)
             if action_definition.get("repeat"):
                 parsed_action["repeat"] = True
                 ri = action_definition.get("repeat_interval", 1000)
-                # TimePeriod object from schema validation -> convert to ms
-                if hasattr(ri, "total_milliseconds"):
-                    parsed_action["repeat_interval"] = ri.total_milliseconds
-                else:
-                    parsed_action["repeat_interval"] = ri
+                # Safely convert TimePeriod, string ("1s"), or number to ms
+                parsed_action["repeat_interval"] = parse_time_to_ms(ri, 1000)
             # Copy delay fields for cancelable timer support
             delay_val = action_definition.get("delay")
             if delay_val is not None:
-                if hasattr(delay_val, "total_in_seconds"):
-                    parsed_action["delay"] = delay_val.total_in_seconds
-                elif isinstance(delay_val, (int, float)):
-                    parsed_action["delay"] = float(delay_val)
-                _LOGGER.debug("Action has delay: %.1fs", parsed_action.get("delay", 0))
+                # Safely convert TimePeriod, string ("5s"), or number to seconds
+                parsed_delay = parse_time_to_seconds(delay_val, 0.0)
+                parsed_action["delay"] = parsed_delay
+                _LOGGER.debug("Action has delay: %.1fs", parsed_delay)
             cancel_on = action_definition.get("delay_cancel_on")
             if cancel_on:
                 parsed_action["delay_cancel_on"] = cancel_on
@@ -835,13 +834,11 @@ class Manager:
                             val = action_definition.get(opt_key)
                             if val is not None:
                                 parsed_action[opt_key] = val
-                        # Convert transition TimePeriod to float seconds
+                        # Convert transition TimePeriod/string to float seconds
                         if "transition" in parsed_action:
-                            t_val = parsed_action["transition"]
-                            if hasattr(t_val, "total_in_seconds"):
-                                parsed_action["transition"] = t_val.total_in_seconds
-                            elif not isinstance(t_val, (int, float)):
-                                parsed_action["transition"] = 0.0
+                            parsed_action["transition"] = parse_time_to_seconds(
+                                parsed_action["transition"], 0.0
+                            )
                         _copy_long_press_meta(parsed_action, action_definition)
                         parsed_actions[click_type].append(parsed_action)
                         continue
@@ -876,17 +873,17 @@ class Manager:
         OutputManager, so they are resolved via ``entity_type='output'``.
 
         Args:
-            entity_type: Entity type ('binary_sensor', 'cover', 'output', 'light')
+            entity_type: Entity type ('binary_sensor', 'cover', 'output', 'light', 'remote_output', 'remote_input')
             entity_id: Entity ID
 
         Returns:
             Entity object or None if not found
         """
-        if entity_type in ("output", "light"):
+        if entity_type in ("output", "light", "remote_output"):
             return self.outputs.get_output(entity_id) or self.outputs.get_output_group(entity_id)
         if entity_type == "cover":
             return self.covers.get_cover(entity_id)
-        if entity_type == "binary_sensor":
+        if entity_type in ("binary_sensor", "remote_input"):
             return self.inputs.get_input(entity_id)
         _LOGGER.warning("Unknown entity type for condition: %s", entity_type)
         return None
@@ -1106,11 +1103,7 @@ class Manager:
             if transition_val and action_definition.get("repeat"):
                 repeat_interval = action_definition.get("repeat_interval")
                 if repeat_interval:
-                    ri_seconds = (
-                        repeat_interval.total_in_seconds
-                        if hasattr(repeat_interval, "total_in_seconds")
-                        else repeat_interval / 1000.0
-                    )
+                    ri_seconds = parse_time_to_seconds(repeat_interval, 1.0)
                     if transition_val > ri_seconds:
                         _LOGGER.debug(
                             "Clamping transition %.3fs to repeat_interval %.3fs",
@@ -1431,7 +1424,6 @@ class Manager:
 
             # Adjustable duration
             adjustable_duration_enabled = bool(out_cfg.get("adjustable_duration", False))
-            from boneio.core.utils.timeperiod import parse_time_to_seconds
 
             dur_default = parse_time_to_seconds(out_cfg.get("duration_default"), 60.0)
             dur_min = max(1.0, parse_time_to_seconds(out_cfg.get("duration_min"), 1.0))
@@ -1450,6 +1442,22 @@ class Manager:
             # claims this row, skip the standard device-manager flow below.
             if _registry.try_setup_output(self, out_cfg, entity_id):
                 continue
+
+            # Determine brightness support from device entity data
+            sup_brightness = False
+            if output_type == "light":
+                device = self.remote_devices.get_device(device_id)
+                if device is not None:
+                    # WLED: all outputs support brightness
+                    if isinstance(device, WLEDRemoteDevice):
+                        sup_brightness = True
+                    else:
+                        # ESPHome: check _lights list for supports_brightness flag
+                        lights_list: list[dict] = getattr(device, "_lights", [])
+                        for light in lights_list:
+                            if light.get("id") == output_id:
+                                sup_brightness = bool(light.get("supports_brightness", False))
+                                break
 
             remote_output = RemoteOutputBase(
                 id=entity_id,
@@ -1474,6 +1482,7 @@ class Manager:
                 duration_min=dur_min,
                 duration_max=dur_max,
                 duration_unit=dur_unit,
+                supports_brightness=sup_brightness,
             )
 
             # Register in shared interlock manager
@@ -1620,15 +1629,18 @@ class Manager:
         _LOGGER.info("Starting config reload")
 
         # Reload config cache in ConfigHelper
-        # NOTE: reload_config() calls load_config_from_file() which may run
-        # full Cerberus validation (~20s) on disk cache miss. Run in a thread
-        # executor to keep the event loop responsive (MQTT, WS, modbus).
+        # Uses fast path: load_yaml_file() + merge_board_config() (~0.5-1s)
+        # instead of full Cerberus validation (~20s). Run in thread executor
+        # because it still does file I/O (reading YAML files from disk).
         try:
             config = await asyncio.to_thread(self._config_helper.reload_config)
             # Update areas mapping from reloaded config
             self._config_helper.set_areas(config.get("areas", []))
         except Exception as e:
             _LOGGER.error(f"Failed to reload config: {e}")
+            # Safety net: if fast-reload fails, force-clear cache so the next
+            # get_config() re-reads from disk (via full validation as fallback).
+            self._config_helper._config_cache = None
             return {"status": "error", "message": str(e), "reloaded_sections": [], "failed_sections": []}
 
         reloaded_sections = []

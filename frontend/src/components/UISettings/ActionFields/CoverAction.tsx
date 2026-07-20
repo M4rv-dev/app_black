@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { NumericInput } from '@/components/ui/NumericInput';
 import {
   Select,
   SelectContent,
@@ -7,16 +8,17 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { normalizeCovers } from '../helpers/coverUtils';
-import EntitySelectDropdown from '../EntitySelectDropdown';
+import SearchableEntityPicker from '../SearchableEntityPicker';
 import type { EntityItem } from '../EntitySelectDropdown';
 import type { CoverActionProps } from './types';
+import { formatActionLabel } from './helpers';
 
 /** Tilt-related cover actions that only apply to venetian covers. */
 const TILT_ACTIONS = ['TILT', 'TILT_OPEN', 'TILT_CLOSE'];
 
 /**
  * Cover Action component - handles local boneIO covers.
- * Uses EntitySelectDropdown for cover selection with name + area display.
+ * Uses SearchableEntityPicker for cover selection with search and area grouping.
  * Filters tilt-related actions based on the selected cover's platform.
  */
 const CoverAction: React.FC<CoverActionProps> = ({
@@ -27,6 +29,7 @@ const CoverAction: React.FC<CoverActionProps> = ({
   allAreas,
   actionCoverOptions,
   isCoverSaved,
+  preferredArea,
 }) => {
   // Wrapper for onUpdate that removes deprecated 'pin' field
   const handleUpdate = (field: string, value: any) => {
@@ -79,7 +82,7 @@ const CoverAction: React.FC<CoverActionProps> = ({
         <label className="label">
           <span className="label-text font-medium">{t('event_form.cover')}</span>
         </label>
-        <EntitySelectDropdown
+        <SearchableEntityPicker
           value={selectedCoverId}
           onChange={(value: string) => {
             handleUpdate('boneio_cover', value);
@@ -93,6 +96,8 @@ const CoverAction: React.FC<CoverActionProps> = ({
           items={coverItems}
           allAreas={allAreas}
           placeholder={t('event_form.select_cover')}
+          recentKey="covers"
+          preferredArea={preferredArea}
         />
       </div>
 
@@ -120,9 +125,7 @@ const CoverAction: React.FC<CoverActionProps> = ({
           <SelectContent>
             {filteredCoverOptions.map((option: string) => (
               <SelectItem key={option} value={option}>
-                {option.split('_').map(word => 
-                  word.charAt(0) + word.slice(1).toLowerCase()
-                ).join(' ')}
+                {formatActionLabel(option, t)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -135,16 +138,14 @@ const CoverAction: React.FC<CoverActionProps> = ({
           <label className="label">
             <span className="label-text font-medium">{t('event_form.tilt_position')} <span className="text-error">*</span></span>
           </label>
-          <input
-            type="number"
-            className={`input input-bordered w-full ${(action.data?.tilt_position === undefined || action.data?.tilt_position === null || action.data?.tilt_position === '') ? 'input-error' : ''}`}
+          <NumericInput
+            className={(action.data?.tilt_position === undefined || action.data?.tilt_position === null || action.data?.tilt_position === '') ? 'input-error' : ''}
             min={0}
             max={100}
             placeholder="50"
             value={action.data?.tilt_position ?? ''}
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10);
-              const data = { ...(action.data || {}), tilt_position: isNaN(val) ? undefined : Math.min(100, Math.max(0, val)) };
+            onChange={(v) => {
+              const data = { ...(action.data || {}), tilt_position: v === '' ? undefined : v };
               onUpdate('data', data);
             }}
           />
@@ -159,16 +160,13 @@ const CoverAction: React.FC<CoverActionProps> = ({
           <label className="label">
             <span className="label-text font-medium">{t('event_form.always_open_till')}</span>
           </label>
-          <input
-            type="number"
-            className="input input-bordered w-full"
+          <NumericInput
             min={0}
             max={100}
             placeholder="50"
             value={action.data?.always_open_till ?? 50}
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10);
-              const data = { ...(action.data || {}), always_open_till: isNaN(val) ? 50 : Math.min(100, Math.max(0, val)) };
+            onChange={(v) => {
+              const data = { ...(action.data || {}), always_open_till: v === '' ? 50 : v };
               onUpdate('data', data);
             }}
           />

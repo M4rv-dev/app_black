@@ -169,10 +169,25 @@ class WLEDRemoteDevice(RemoteDevice):
             _LOGGER.debug("Closed session for WLED '%s'", self._name)
     
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session."""
+        """Get or create aiohttp session.
+
+        Uses ``ThreadedResolver`` (system ``getaddrinfo`` via NSS) so that
+        mDNS ``.local`` hostnames are resolved correctly through Avahi.
+        The default aiohttp resolver (``AsyncResolver`` / c-ares) bypasses
+        NSS entirely, causing ``Name or service not known`` errors for
+        ``.local`` names even when ``ping`` from the same host works fine.
+
+        Timeout is kept short (3s total, 2s connect) so that unreachable
+        devices do not block the caller.
+        """
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=10)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            timeout = aiohttp.ClientTimeout(total=3, connect=2)
+            resolver = aiohttp.resolver.ThreadedResolver()
+            connector = aiohttp.TCPConnector(resolver=resolver)
+            self._session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+            )
         return self._session
     
     async def _send_state(self, state: dict[str, Any]) -> bool:
@@ -288,10 +303,18 @@ class WLEDRemoteDevice(RemoteDevice):
             
             if action == "ON":
                 seg_state["on"] = True
+                # Ensure device is globally on so the segment is visible
+                state["on"] = True
             elif action == "OFF":
                 seg_state["on"] = False
             elif action == "TOGGLE":
-                seg_state["on"] = "t"  # WLED toggle syntax
+                # WLED ignores "on": "t" at segment level (tested on
+                # v0.15.0-b4) — resolve toggle using cached state.
+                current_on = self.segment_is_on(segment_id)
+                seg_state["on"] = not current_on
+                if not current_on:
+                    # Turning on — ensure device is globally on
+                    state["on"] = True
             
             if brightness is not None:
                 seg_state["bri"] = max(0, min(255, brightness))
@@ -358,6 +381,34 @@ class WLEDRemoteDevice(RemoteDevice):
         )
         
         return await self._send_state(state)
+
+    def control_light_fire_and_forget(
+        self,
+        **kwargs: Any,
+    ) -> None:
+        """Schedule ``control_light`` as a background task.
+
+        Use this when the caller must not be blocked by network I/O
+        (e.g. when called from the EventBus action handler).  The task
+        runs independently; failures are logged but do not propagate.
+
+        Args:
+            **kwargs: Forwarded to :meth:`control_light`.
+        """
+        asyncio.create_task(
+            self._control_light_safe(**kwargs),
+            name=f"wled_ff_{self._id}",
+        )
+
+    async def _control_light_safe(self, **kwargs: Any) -> None:
+        """Wrapper that catches all exceptions so fire-and-forget tasks never crash."""
+        try:
+            await self.control_light(**kwargs)
+        except Exception as exc:
+            _LOGGER.error(
+                "WLED fire-and-forget failed for '%s': %s",
+                self._name, exc,
+            )
     
     async def control_output(
         self,
@@ -479,12 +530,24 @@ class WLEDRemoteDevice(RemoteDevice):
                 # Update internal segments list
                 self._segments = segments
                 
+                # Persist effects/palettes/segments to JSON cache
+                # (they are no longer stored in config.yaml)
+                from boneio.core.remote.wled_cache import update_device_metadata
+                update_device_metadata(
+                    self._id,
+                    effects=effects,
+                    palettes=palettes,
+                    segments=segments,
+                )
+                
                 _LOGGER.info(
-                    "Discovered WLED '%s' v%s with %d segments, %d LEDs",
+                    "Discovered WLED '%s' v%s with %d segments, %d LEDs, %d effects, %d palettes",
                     self._device_info["name"],
                     self._device_info["version"],
                     len(segments),
-                    self._device_info["led_count"]
+                    self._device_info["led_count"],
+                    len(effects),
+                    len(palettes),
                 )
                 
                 return self._device_info

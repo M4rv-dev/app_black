@@ -3,14 +3,7 @@ import axios from '@/api/axios';
 import { copyToClipboard } from '@/utils/clipboard';
 import { FaPlus, FaDownload, FaUpload } from 'react-icons/fa';
 import { useTranslation } from '../../hooks/useTranslation';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
+import { useConfig } from '../../contexts/ConfigContext';
 
 // Extracted components & hooks
 import { useItemActions } from './hooks/useItemActions';
@@ -36,7 +29,7 @@ export interface ArrayTableWidgetProps {
   schema: any;
   title?: string;
   uiSchema?: any;
-  sectionType?: 'binary_sensor' | 'event' | 'local_inputs' | 'remote_inputs' | 'remote_outputs' | 'remote_sensors' | 'output' | 'output_group' | 'cover' | 'modbus_devices' | 'areas' | 'sensor' | 'virtual_energy_sensor' | 'remote_devices' | 'template' | 'adc' | 'board_sensors' | 'other';
+  sectionType?: 'binary_sensor' | 'event' | 'local_inputs' | 'remote_inputs' | 'remote_outputs' | 'remote_sensors' | 'output' | 'output_group' | 'cover' | 'modbus_devices' | 'areas' | 'sensor' | 'virtual_energy_sensor' | 'remote_devices' | 'template' | 'adc' | 'board_sensors' | 'ds2482' | 'other';
   deviceType?: string;
   allBinarySensors?: any[];
   allEvents?: any[];
@@ -77,8 +70,9 @@ const isInputSection = (s: string) => s === 'binary_sensor' || s === 'event' || 
  * Uses regular table with Edit buttons, @rjsf form only appears in modal.
  * This prevents automatic onChange calls during editing.
  */
-const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChange, schema, title, uiSchema, sectionType = 'other', deviceType, allBinarySensors = [], allEvents = [], allOutputs = [], allOutputGroups = [], allCovers = [], allAreas = [], allSensors = [], allModbusDevices = [], allVirtualEnergySensors = [], allRemoteDevices = [], allRemoteInputs = [], mcp23017 = [], savedOutputs, savedOutputGroups, savedCovers, onUpdateEvents, onUpdateBinarySensors, onSaveSection, editItemName, onEditItemOpened }) => {
+const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChange, schema, title: _title, uiSchema, sectionType = 'other', deviceType, allBinarySensors = [], allEvents = [], allOutputs = [], allOutputGroups = [], allCovers = [], allAreas = [], allSensors = [], allModbusDevices = [], allVirtualEnergySensors = [], allRemoteDevices = [], allRemoteInputs = [], mcp23017 = [], savedOutputs, savedOutputGroups, savedCovers, onUpdateEvents, onUpdateBinarySensors, onSaveSection, editItemName, onEditItemOpened }) => {
   const { t } = useTranslation();
+  const { ds2482Supported } = useConfig();
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editingItem, setEditingItem] = useState<any>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -368,6 +362,11 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
   const handleDelete = (index: number) => {
     const item = value[index];
 
+    // Prevent deleting built-in DS2482 on v1.0+ boards
+    if (sectionType === 'ds2482' && ds2482Supported && item.id === 'ds2482_bus' && item.address === '0x18') {
+      return;
+    }
+
     if (sectionType === 'areas') {
       const affected = findItemsUsingArea(item.id);
       if (affected.length > 0) {
@@ -472,19 +471,17 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
       <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept=".yaml,.yml,.json" className="hidden" />
 
       {/* Toolbar */}
-      <div className="flex justify-between items-center flex-wrap gap-2">
-        <h3 className="text-lg font-semibold">{title || t('array_table_widget.items')}</h3>
-        <div className="flex gap-2 flex-wrap">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          {/* Import / Export — icon-only on mobile */}
           <div className="tooltip tooltip-bottom" data-tip={t('import_export.export')}>
-            <button onClick={handleExport} className="btn btn-ghost btn-sm" disabled={value.length === 0}>
+            <button onClick={handleExport} className="btn btn-ghost btn-sm btn-square" disabled={value.length === 0}>
               <FaDownload />
-              <span className="hidden sm:inline ml-1">{t('import_export.export')}</span>
             </button>
           </div>
           <div className="tooltip tooltip-bottom" data-tip={t('import_export.import')}>
-            <button onClick={() => fileInputRef.current?.click()} className="btn btn-ghost btn-sm">
+            <button onClick={() => fileInputRef.current?.click()} className="btn btn-ghost btn-sm btn-square">
               <FaUpload />
-              <span className="hidden sm:inline ml-1">{t('import_export.import')}</span>
             </button>
           </div>
 
@@ -495,6 +492,7 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
               </button>
             </div>
           )}
+        </div>
 
           {/* Add new button — module-owned dropdown when expander exists; plain button otherwise */}
           {sectionType === 'output' && value.some(isExpanderOutput) ? (
@@ -508,7 +506,6 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
               </button>
             </div>
           )}
-        </div>
       </div>
 
       {/* Table or empty state */}

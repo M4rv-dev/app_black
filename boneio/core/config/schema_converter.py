@@ -267,6 +267,13 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
+    # Use our full schema builder: _get_schema() internally injects modbus
+    # device models (_inject_modbus_models) AND applies our module schema
+    # extensions (_apply_module_schema_extensions → expander/remote_mqtt fields).
+    # Upstream's standalone copy only does modbus injection and would drop our
+    # module fields. We regenerate schemas on-device (inv regen-schemas, ARM64)
+    # where the full dependency graph is installed, so the CI import concern
+    # upstream notes here does not apply to our workflow.
     from boneio.core.config.yaml_util import _get_schema, clear_config_cache
     clear_config_cache()
     schema = _get_schema()

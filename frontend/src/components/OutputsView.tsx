@@ -7,17 +7,20 @@ import axios from '@/api/axios';
 import { WebSocketContext } from '../App';
 import ViewToggle from './ViewToggle';
 import { isOutputEvent, isCoverEvent, isGroupEvent, CoverState, OutputState } from '../hooks/useWebSocket';
-import OutputItem from './OutputItem';
+import EntityCard from './EntityCard';
+import type { EntityData } from './EntityCard';
+import { EntityGrid, ENTITY_GRID_CLASS } from './EntityGrid';
 import CoverItem from './CoverItem';
 import { useTranslation } from '../hooks/useTranslation';
 import { FaExclamationTriangle, FaSortAmountDown, FaSortAlphaDown, FaClock, FaCog, FaWifi, FaSearch, FaTimes } from 'react-icons/fa';
+import { HiSignal } from 'react-icons/hi2';
+import MqttReferenceSheet from '@/components/MqttReferenceSheet';
 import { cn } from '@/lib/utils';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from '@/components/ui/dialog';
 
 import type { OutputCategory, SortMode } from '@/types/outputs';
@@ -224,30 +227,48 @@ export default function OutputsView({error}: {error: string | null}) {
     type: 'output'
   });
 
-  const handleLongPress = useCallback((output: OutputState) => {
-    setLongPressDialog({ open: true, output, type: 'output' });
+  const handleLongPress = useCallback((output: EntityData) => {
+    setLongPressDialog({ open: true, output: output as OutputState, type: 'output' });
   }, []);
 
-  const handleGroupLongPress = useCallback((output: OutputState) => {
-    setLongPressDialog({ open: true, output, type: 'output_group' });
+  const handleGroupLongPress = useCallback((output: EntityData) => {
+    setLongPressDialog({ open: true, output: output as OutputState, type: 'output_group' });
   }, []);
 
   const handleCoverLongPress = useCallback((cover: CoverState) => {
     setLongPressDialog({ open: true, output: cover, type: 'cover' });
   }, []);
 
-  const handleRemoteOutputLongPress = useCallback((output: OutputState) => {
-    setLongPressDialog({ open: true, output, type: 'remote_outputs' });
+  const handleRemoteOutputLongPress = useCallback((output: EntityData) => {
+    setLongPressDialog({ open: true, output: output as OutputState, type: 'remote_outputs' });
   }, []);
 
   const handleGoToSettings = useCallback(() => {
     if (!longPressDialog.output) return;
-    // Use id for filtering instead of name to avoid duplicates
     const outputId = longPressDialog.output.id;
     const section = longPressDialog.type;
     navigate(`/settings/${section}?edit=${encodeURIComponent(outputId)}`);
     setLongPressDialog({ open: false, output: null, type: 'output' });
   }, [longPressDialog.output, longPressDialog.type, navigate]);
+
+  // MQTT Reference dialog state
+  const [mqttRef, setMqttRef] = useState<{
+    open: boolean;
+    entityType: string;
+    entityId: string;
+    entityName: string;
+  }>({ open: false, entityType: '', entityId: '', entityName: '' });
+
+  const handleOpenMqttRef = useCallback(() => {
+    if (!longPressDialog.output) return;
+    setMqttRef({
+      open: true,
+      entityType: longPressDialog.type,
+      entityId: longPressDialog.output.id,
+      entityName: longPressDialog.output.name,
+    });
+    setLongPressDialog({ open: false, output: null, type: 'output' });
+  }, [longPressDialog.output, longPressDialog.type]);
 
   // Track recently changed outputs for highlight effect
   useEffect(() => {
@@ -369,8 +390,7 @@ export default function OutputsView({error}: {error: string | null}) {
     }
   }, []);
 
-  const gridClass = "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4";
-  const listClass = "flex flex-col gap-4";
+
 
   /**
    * Render a section with outputs
@@ -387,9 +407,9 @@ export default function OutputsView({error}: {error: string | null}) {
     return (
       <div key={category}>
         <div className="divider">{getCategoryLabel(category)}</div>
-        <div className={isGrid ? gridClass : listClass}>
+        <EntityGrid isGrid={isGrid}>
           {filtered.map((output) => (
-            <OutputItem 
+            <EntityCard
               key={output.id}
               output={output}
               onToggle={isStateOnly ? undefined : onToggle}
@@ -402,7 +422,7 @@ export default function OutputsView({error}: {error: string | null}) {
               onLongPress={handleLongPress}
             />
           ))}
-        </div>
+        </EntityGrid>
       </div>
     );
   };
@@ -489,7 +509,7 @@ export default function OutputsView({error}: {error: string | null}) {
           {filteredCovers.length > 0 && (
             <>
               <div className="divider">{getCategoryLabel('cover')}</div>
-              <div className={isGrid ? cn(gridClass, "grid-cols-1") : listClass}>
+              <EntityGrid isGrid={isGrid} gridClassName={cn(ENTITY_GRID_CLASS, "grid-cols-1")}>
                 {filteredCovers.map((cover) => (
                   <CoverItem 
                     key={cover.id}
@@ -500,7 +520,7 @@ export default function OutputsView({error}: {error: string | null}) {
                     onLongPress={handleCoverLongPress}
                   />
                 ))}
-              </div>
+              </EntityGrid>
             </>
           )}
 
@@ -508,17 +528,15 @@ export default function OutputsView({error}: {error: string | null}) {
           {filteredGroups.length > 0 && (
             <>
               <div className="divider">{getCategoryLabel('group')}</div>
-              <div className={isGrid ? gridClass : listClass}>
+              <EntityGrid isGrid={isGrid}>
                 {filteredGroups.map((group) => (
-                  <OutputItem 
+                  <EntityCard
                     key={group.id}
                     output={{
                       id: group.id,
                       name: group.name,
                       state: group.state,
                       type: group.type,
-                      expander_id: null,
-                      pin: 0,
                       timestamp: group.timestamp,
                       area: null,
                       interlock_groups: []
@@ -530,7 +548,7 @@ export default function OutputsView({error}: {error: string | null}) {
                     onLongPress={handleGroupLongPress}
                   />
                 ))}
-              </div>
+              </EntityGrid>
             </>
           )}
 
@@ -546,9 +564,9 @@ export default function OutputsView({error}: {error: string | null}) {
                   {t('sections.remote_outputs')}
                 </span>
               </div>
-              <div className={isGrid ? gridClass : listClass}>
+              <EntityGrid isGrid={isGrid}>
                 {filteredRemote.map((output) => (
-                  <OutputItem
+                  <EntityCard
                     key={output.id}
                     output={output}
                     onToggle={toggleOutput}
@@ -560,7 +578,7 @@ export default function OutputsView({error}: {error: string | null}) {
                     onLongPress={handleRemoteOutputLongPress}
                   />
                 ))}
-              </div>
+              </EntityGrid>
             </>
           )}
 
@@ -586,35 +604,48 @@ export default function OutputsView({error}: {error: string | null}) {
         </div>
       )}
 
-      {/* Long press dialog - go to settings */}
+      {/* Long press dialog - choose action */}
       <Dialog open={longPressDialog.open} onOpenChange={(open) => setLongPressDialog({ open, output: open ? longPressDialog.output : null, type: longPressDialog.type })}>
-        <DialogContent className="sm:max-w-md bg-base-200">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FaCog className="w-5 h-5" />
-              {t('outputs.go_to_settings')}
+        <DialogContent
+          className="bg-base-100 p-0 gap-0 sm:max-w-sm"
+        >
+          <DialogHeader className="px-5 pt-4 pb-0 sm:pt-5">
+            <DialogTitle className="text-center">
+              {longPressDialog.output?.name}
             </DialogTitle>
+            <p className="text-xs text-base-content/50 text-center">
+              {longPressDialog.output?.id}
+            </p>
           </DialogHeader>
-          <div className="py-4">
-            <p>{t('outputs.go_to_settings_confirm')}</p>
-            <p className="font-semibold mt-2">{longPressDialog.output?.name}</p>
-          </div>
-          <DialogFooter className="gap-2">
-            <button 
-              className="btn btn-ghost" 
-              onClick={() => setLongPressDialog({ open: false, output: null, type: 'output' })}
+          <div className="px-5 py-4 space-y-2">
+            {/* MQTT Reference button */}
+            <button
+              className="btn btn-primary btn-block gap-2 h-14 text-base"
+              onClick={handleOpenMqttRef}
             >
-              {t('common.cancel')}
+              <HiSignal className="w-5 h-5" />
+              {t('mqtt_reference.button')}
             </button>
-            <button 
-              className="btn btn-primary" 
+            {/* Go to settings button */}
+            <button
+              className="btn btn-ghost btn-block gap-2 h-12"
               onClick={handleGoToSettings}
             >
+              <FaCog className="w-4 h-4" />
               {t('outputs.go_to_settings')}
             </button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
+
+      {/* MQTT Reference Sheet */}
+      <MqttReferenceSheet
+        open={mqttRef.open}
+        onOpenChange={(open) => setMqttRef(prev => ({ ...prev, open }))}
+        entityType={mqttRef.entityType}
+        entityId={mqttRef.entityId}
+        entityName={mqttRef.entityName}
+      />
     </div>
   );
 }

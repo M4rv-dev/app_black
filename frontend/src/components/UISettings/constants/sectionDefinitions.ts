@@ -34,6 +34,7 @@ export const RELOAD_SECTIONS: SectionDefinition[] = [
   { name: 'remote_inputs', icon: '🔌', translationKey: 'sections.remote_inputs', group: 'remote' },
   { name: 'remote_outputs', icon: '📡', translationKey: 'sections.remote_outputs', group: 'remote' },
   { name: 'remote_sensors', icon: '🌡️', translationKey: 'sections.remote_sensors', group: 'remote' },
+  { name: 'binding_matrix', icon: '📊', translationKey: 'sections.binding_matrix', group: 'tools' },
 ];
 
 /**
@@ -47,6 +48,7 @@ export const RESTART_SECTIONS: SectionDefinition[] = [
   { name: 'modbus', icon: '🔌', translationKey: 'sections.modbus' },
   { name: 'can', icon: '🔗', translationKey: 'sections.can' },
   { name: 'mcp23017', icon: '🔗', translationKey: 'sections.mcp23017' },
+  { name: 'ds2482', icon: '🔌', translationKey: 'sections.ds2482' },
   { name: 'board_sensors', icon: '🔌', translationKey: 'sections.board_sensors' },
 ];
 
@@ -74,6 +76,7 @@ export const ARRAY_SECTIONS = [
   'template',
   'adc',
   'board_sensors',
+  'ds2482',
 ] as const;
 
 /**
