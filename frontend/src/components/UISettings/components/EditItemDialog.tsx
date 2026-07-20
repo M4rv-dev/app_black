@@ -66,6 +66,10 @@ export interface EditItemDialogProps {
   interlockGroups?: string[];
   /** Available Dallas sensors. */
   availableDallasSensors?: { address: string; type: string }[];
+  /** Expander module (modules/expander): output kind for MCP hardware fields. */
+  outputKind?: 'board' | 'expander';
+  /** Expander module (modules/expander): MCP23017 chips for hardware pickers. */
+  mcp23017?: Array<{ id?: string }>;
   /** Called when editingItem changes. */
   onChange: (item: any) => void;
   /** Called when user clicks Save. */
@@ -117,6 +121,8 @@ const EditItemDialog: React.FC<EditItemDialogProps> = ({
   value,
   interlockGroups = [],
   availableDallasSensors = [],
+  outputKind,
+  mcp23017 = [],
   onChange,
   onSave,
   onCancel,
@@ -188,6 +194,8 @@ const EditItemDialog: React.FC<EditItemDialogProps> = ({
                 value={value || []}
                 interlockGroups={interlockGroups}
                 availableDallasSensors={availableDallasSensors}
+                outputKind={outputKind}
+                mcp23017={mcp23017}
                 onChange={onChange}
                 onSave={onSave}
                 onCancel={onCancel}

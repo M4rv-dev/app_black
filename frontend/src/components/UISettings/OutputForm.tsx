@@ -237,14 +237,21 @@ const OutputForm: React.FC<OutputFormProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <SimpleTimePeriodInput
           value={data.momentary_turn_on || ''}
-          onChange={(value: string) => updateField('momentary_turn_on', value || undefined)}
+          onChange={(value: string) => {
+            // Treat zero values ("0s", "0ms", etc.) as clearing the field
+            const isZero = /^0+(ms|s|sec|min|h|hours?)?$/i.test(value.trim());
+            updateField('momentary_turn_on', isZero ? undefined : (value || undefined));
+          }}
           label={t('outputs.momentary_turn_on')}
           required={false}
           minimum={0}
         />
         <SimpleTimePeriodInput
           value={data.momentary_turn_off || ''}
-          onChange={(value: string) => updateField('momentary_turn_off', value || undefined)}
+          onChange={(value: string) => {
+            const isZero = /^0+(ms|s|sec|min|h|hours?)?$/i.test(value.trim());
+            updateField('momentary_turn_off', isZero ? undefined : (value || undefined));
+          }}
           label={t('outputs.momentary_turn_off')}
           required={false}
           minimum={0}
@@ -266,18 +273,25 @@ const OutputForm: React.FC<OutputFormProps> = ({
       <div className="divider">{t('outputs.divider_adjustable_duration')}</div>
 
       <div className="grid grid-cols-1 gap-4">
-        <fieldset className="fieldset bg-base-100 border-base-300 rounded-box border p-4">
-          <legend className="fieldset-legend">{t('outputs.adjustable_duration_label')}</legend>
-          <label className="label cursor-pointer justify-start gap-4">
-            <input
-              type="checkbox"
-              className="toggle toggle-primary"
-              checked={data.adjustable_duration === true}
-              onChange={() => updateField('adjustable_duration', !data.adjustable_duration)}
-            />
-            <span className="label-text">{t('outputs.adjustable_duration_desc')}</span>
-          </label>
-        </fieldset>
+        <div className="space-y-2">
+          <SettingsToggleGroup
+            items={[
+              {
+                key: 'adjustable_duration',
+                label: t('outputs.adjustable_duration_label'),
+                description: t('outputs.adjustable_duration_desc'),
+                checked: data.adjustable_duration === true,
+                onChange: () => updateField('adjustable_duration', !data.adjustable_duration),
+                disabled: !!data.momentary_turn_on,
+              },
+            ]}
+          />
+          {data.momentary_turn_on && (
+            <p className="text-xs text-warning px-1">
+              {t('outputs.adjustable_duration_conflict')}
+            </p>
+          )}
+        </div>
 
         {data.adjustable_duration && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pl-2 border-l-2 border-primary/30">

@@ -10,8 +10,7 @@ import { useItemActions } from './hooks/useItemActions';
 import { useImportExport } from './hooks/useImportExport';
 import { validateItem, areAllItemsUsed } from './helpers/itemValidation';
 import { OutputAddButton, isExpanderOutput, useOutputKind, EXPANDER_OUTPUT_PREFIX } from './modules/expander';
-import FormRenderer from './components/FormRenderer';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import EditItemDialog from './components/EditItemDialog';
 import TableRenderer from './components/TableRenderer';
 import DeleteConfirmDialog from './components/DeleteConfirmDialog';
 import ImportDialog from './components/ImportDialog';
@@ -534,83 +533,41 @@ const ArrayTableWidget: React.FC<ArrayTableWidgetProps> = ({ value = [], onChang
       <TemplatePicker open={showTemplatePicker} onOpenChange={setShowTemplatePicker} onSelect={handleTemplatePlatformSelect} />
 
       {/* Edit Modal */}
-      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="max-w-4xl sm:max-w-3xl lg:w-[120vw] max-h-[80vh] flex flex-col gap-0 bg-base-100">
-          <DialogHeader>
-            <DialogTitle>
-              {editingIndex !== null ? (
-                <>
-                  {t('settings.edit_item')}
-                  {editingItem && (editingItem.id || editingItem.name || editingItem.boneio_output || editingItem.boneio_input) && (
-                    <span className="font-normal text-base-content/70">
-                      {' - '}
-                      {editingItem.id || editingItem.name || ''}
-                      {(editingItem.id || editingItem.name) && (editingItem.boneio_output || editingItem.boneio_input) && ' '}
-                      {editingItem.boneio_output && <span className="text-sm">({editingItem.boneio_output})</span>}
-                      {editingItem.boneio_input && <span className="text-sm">({editingItem.boneio_input})</span>}
-                    </span>
-                  )}
-                </>
-              ) : t('settings.add_new_item')}
-            </DialogTitle>
-            <DialogDescription className="sr-only">
-              {editingIndex !== null ? t('settings.edit_item') : t('settings.add_new_item')}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex-1 overflow-y-auto overflow-x-hidden -mx-6 px-6 wrap-break-words [&_.label-text]:whitespace-normal [&_.label-text]:wrap-break-words [&_.label-text-alt]:whitespace-normal [&_.label-text-alt]:wrap-break-words [&_.form-control]:min-w-0">
-            {editingItem && (
-              <FormRenderer
-                sectionType={sectionType}
-                editingItem={editingItem}
-                editingIndex={editingIndex}
-                schema={schema}
-                uiSchema={uiSchema}
-                deviceType={deviceType}
-                allBinarySensors={allBinarySensors}
-                allEvents={allEvents}
-                allOutputs={allOutputs}
-                allOutputGroups={allOutputGroups}
-                allCovers={allCovers}
-                allAreas={allAreas}
-                allSensors={allSensors}
-                allModbusDevices={allModbusDevices}
-                allRemoteDevices={allRemoteDevices}
-                allRemoteInputs={allRemoteInputs}
-                savedOutputs={savedOutputs}
-                savedOutputGroups={savedOutputGroups}
-                savedCovers={savedCovers}
-                value={value}
-                interlockGroups={interlockGroups}
-                availableDallasSensors={availableDallasSensors}
-                outputKind={outputKind}
-                mcp23017={mcp23017}
-                onChange={setEditingItem}
-                onSave={handleSave}
-                onCancel={handleCancel}
-                onValidationChange={setHasValidationErrors}
-                onInterlockGroupCreated={handleInterlockGroupCreated}
-                attemptedSubmit={attemptedSubmit}
-              />
-            )}
-          </div>
-
-          <DialogFooter className="shrink-0 mt-2">
-            <button type="button" onClick={handleCancel} className="btn btn-ghost">
-              {t('common.cancel')}
-            </button>
-            <button
-              type="button"
-              onClick={handleSave}
-              className="btn btn-primary"
-              disabled={hasValidationErrors || (editingIndex !== null && originalItemRef.current !== null && JSON.stringify(editingItem) === originalItemRef.current)}
-              title={hasValidationErrors ? t('settings.fix_validation_errors') : ''}
-            >
-              {editingIndex !== null ? t('settings.save_changes') : t('settings.add_item')}
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <EditItemDialog
+        open={isModalOpen}
+        onOpenChange={setIsModalOpen}
+        editingItem={editingItem}
+        editingIndex={editingIndex}
+        sectionType={sectionType}
+        schema={schema}
+        uiSchema={uiSchema}
+        deviceType={deviceType}
+        allBinarySensors={allBinarySensors}
+        allEvents={allEvents}
+        allOutputs={allOutputs}
+        allOutputGroups={allOutputGroups}
+        allCovers={allCovers}
+        allAreas={allAreas}
+        allSensors={allSensors}
+        allModbusDevices={allModbusDevices}
+        allRemoteDevices={allRemoteDevices}
+        allRemoteInputs={allRemoteInputs}
+        savedOutputs={savedOutputs}
+        savedOutputGroups={savedOutputGroups}
+        savedCovers={savedCovers}
+        value={value}
+        interlockGroups={interlockGroups}
+        availableDallasSensors={availableDallasSensors}
+        outputKind={outputKind}
+        mcp23017={mcp23017}
+        onChange={setEditingItem}
+        onSave={handleSave}
+        onCancel={handleCancel}
+        onValidationChange={setHasValidationErrors}
+        onInterlockGroupCreated={handleInterlockGroupCreated}
+        attemptedSubmit={attemptedSubmit}
+        saveDisabled={hasValidationErrors || (editingIndex !== null && originalItemRef.current !== null && JSON.stringify(editingItem) === originalItemRef.current)}
+      />
 
       {/* Delete Confirmation */}
       <DeleteConfirmDialog

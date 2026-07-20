@@ -14,6 +14,7 @@ import {
 import { FaFaucetDrip } from 'react-icons/fa6';
 import clsx from 'clsx';
 import EditItemDialog from './components/EditItemDialog';
+import { useOutputKind } from './modules/expander';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1018,6 +1019,10 @@ const BindingMatrix: React.FC<BindingMatrixProps> = ({ formData, sections, onSav
   const [isSavingOutput, setIsSavingOutput] = useState(false);
   const originalOutputRef = useRef<string | null>(null);
 
+  // Expander (modules/expander): derive output kind so editing an expander (MCP)
+  // output from the matrix surfaces its MCP hardware fields, same as the Outputs table.
+  const editingOutputKind = useOutputKind(editingOutput);
+
   /** Open inline edit dialog for an input, optionally on a specific tab. */
   const handleEditInput = useCallback((input: InputRow, clickType?: string) => {
     // Find the raw item in formData
@@ -1348,6 +1353,8 @@ const BindingMatrix: React.FC<BindingMatrixProps> = ({ formData, sections, onSav
         allOutputs={allOutputs}
         allCovers={allCovers}
         allAreas={allAreasData}
+        outputKind={editingOutputKind}
+        mcp23017={formData.mcp23017 || []}
         onChange={setEditingOutput}
         onSave={handleSaveOutput}
         onCancel={handleCancelOutputEdit}
