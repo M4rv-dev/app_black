@@ -110,6 +110,112 @@ pattern eliminates that.
 
 ## Timeline
 
+### 2026-06-24 — Session 6 part D (output-groups dropdown + zasada upstream-friendliness)
+
+**Zgłoszenia (w kolejności napływania)**:
+1. "w ustawieniach w sekcji modbus system nie wskazuje mojego obecnego portu uart"
+2. "w ustawieniach mogę zdefiniować grupy wyjść ale nie widzę tam na liście
+   urządzeń z poza boneio. fajnie jakby były tam też urządzenia spoza płytki
+   jak np expansion board + wyjścia zdefiniowane w 'zdalnych wyjściach'"
+3. "może lepiej nie przerabiać samych output groups tylko da się dodać do
+   yamla gdzie są zdefiniowane remote i expansion output jakąś flagę lub
+   parametr który pozwoli bez zmian w output group form widzieć te wyjścia?"
+4. "niech to będzie nasza główna zasada przy zmianach żeby zachowywać upstream
+   jak najbardziej nienaruszony, i ogólnie być upstream-freandly przy każdym
+   działaniu."
+5. "i zasada, że jeżeli upstream zawiera w którejkolwiek wersji feature
+   podobny do naszego musimy każdy taki przypadek głęboko zanalizować… po
+   utwierdzeniu się że to działa podobnie lub akceptujemy różnice wtedy
+   odłączamy nasz moduł na zawsze i zaczynamy korzystać z tego upstreamowego."
+
+**Wykonano**:
+
+- ✅ **Modbus dropdown** (commit `0c5a021`, frontend-only): `ModbusForm.tsx:24`
+  miał `toLowerCase()` które łamało `/dev/ttyUSB0` (Linux paths są
+  case-sensitive — `'/dev/ttyusb0'` nie matchował żadnego `<option value>`).
+  Fix: lowercase tylko stringi, które NIE zaczynają się od `/dev/`, żeby
+  zachować legacy `"UART4" → "uart4"` matching dla starych configów.
+- ✅ **Output Groups picker** (commits `0fbf3e6` → revert `c59c53b` → final
+  `b07a3ab`/`bdf32fa`/`0a72591`): podejście ewoluowało przez 4 iteracje:
+  1. Pierwszy podejście (frontend filter) — zostało revertem cofnięte po
+     user's preferencji "lepiej w YAML/danych zamiast formularza".
+  2. Final approach: nowy hook **`enrich_config_response`** + **`strip_for_save`**
+     w `ModuleRegistry` (nasz `boneio/modules/_registry.py`). Każdy moduł
+     dostaje szansę dodać derived fields do GET /api/config response i
+     usunąć je przed PUT save do YAML — round-trip clean, user's YAML
+     nigdy nie dostaje śmieci.
+  3. `expander/__init__.py`: enricher wstrzykuje `boneio_output = id` dla
+     entries `output:` które mają `kind: mcp` + `is_expander_output()` + brak
+     `boneio_output`. Stripper idempotentnie usuwa pole tylko gdy wciąż
+     pasuje do `id`.
+  4. `remote_mqtt/manager_integration.py`: enricher wstrzykuje
+     `boneio_output = f"{device_id}_{output_id}"` dla CAŁEJ sekcji
+     `remote_outputs:` (niezależnie od `remote_source` — mqtt/esphome/wled/can).
+     Lokalizacja w `manager_integration.py` (nie `__init__.py`) bo ten
+     sub-moduł rejestruje się w `ModuleRegistry`, nie top-level package.
+  5. Upstream touch: **`boneio/webui/routes/config.py`** — 4 linijki
+     (2 import + 2 dispatcher calls). **`boneio/webui/app.py`** — 3 linijki
+     (1 import + 2 lines) w bloku `if initial_config is not None:` żeby
+     wzbogacić pre-populated cache też (root cause czemu prvious naprawa
+     wydawała się "nie działać": `Config cache pre-populated from
+     initial_config` ścieżka omijała endpoint handler).
+
+**Architekturalne pułapki napotkane**:
+
+- **Cache pre-population gap**: `webui/app.py:700-708` pre-populuje
+  `_config_cache` przy starcie aplikacji z `initial_config`. To znaczy że
+  PIERWSZY i KAŻDY następny GET /api/config trafia w cache hit i NIGDY nie
+  uruchamia kodu w endpoint handler'ze. Dodanie enrichera tylko w endpoint
+  handler'ze było **no-op w praktyce**. Każdy hook który modyfikuje
+  response na ścieżce GET musi też być wpięty w pre-population.
+- **`is_expander_output()` API gotcha**: funkcja oczekuje DICT (entry),
+  nie ID string'a. Wywołanie z `entry_id` (string) rzucało `AttributeError`,
+  który był łapany silently przez `_LOGGER.exception` w
+  `ModuleRegistry.enrich_config_response` dispatcher'ze — efekt: enricher
+  wywoływany, kod silentnie failuje, journal pusty (bo logger.exception
+  na DEBUG level dla `boneio.modules._registry`). One-character fix.
+- **Logger level w testach poza service'em**: `boneio.modules.*` ma
+  effective level WARNING w izolowanym `python3` REPL (bo configurator
+  loggerów `boneio.core.utils.logger` jest aktywowany tylko podczas startu
+  service'u). To utrudniało diagnostykę przez ssh debug.
+- **Sub-module vs top-level rejestracja w ModuleRegistry**: `expander`
+  rejestruje `boneio.modules.expander` (top-level), `remote_mqtt` rejestruje
+  `boneio.modules.remote_mqtt.manager_integration` (sub-module). Hook
+  attributes muszą siedzieć na zarejestrowanym object'cie. Albo zunifikuj
+  rejestrację, albo pamiętaj że dla `remote_mqtt` hooks muszą iść do
+  `manager_integration.py`. Wybrane: zostawić jak jest.
+
+**Architekturalne zasady utrwalone do memory** (`feedback_module_pattern.md`):
+
+- **Session 6c — upstream-friendly nawet dla bug fixów**: przed *każdą*
+  edycją upstream'owego pliku ask "czy ModuleRegistry hook + helper na
+  module side mógłby to zrobić?". Acceptable touch: 1 import + 1 call site
+  delegujący do ModuleRegistry / module API.
+- **Session 6d — upstream feature parity audit**: gdy upstream w jakiejś
+  wersji dodaje feature podobny do naszego, **głęboko zanalizować** czy
+  zachowania są identyczne lub akceptujemy różnice, i jeśli tak —
+  **retire'ować nasz moduł permanently** przez gut do shim re-exportującego
+  upstream'owe API. Nie utrzymywać dual implementations.
+
+**Wynik użytkownika** (potwierdzony "wszystko działa"):
+- Modbus dropdown pokazuje `/dev/ttyUSB0 (USB-RS485 dongle)` jako wybrany.
+- Output Groups → Member outputs picker: 69 outputów (32 board + 32 expansion
+  + 5 remote, minus cover'y). Wcześniej: 32 (tylko board).
+- YAML user'a nietknięty — round-trip GET → edit → PUT nie wstrzykuje
+  `boneio_output` do plików `expansion_board_output_*.yaml` ani do sekcji
+  `remote_outputs:`.
+
+**Commits** (na `migrate/v1.5.0dev3`):
+- `0c5a021` — fix(modbus-ui): preserve case on /dev/tty… UART paths
+- `0fbf3e6` — fix(output-groups): include exp+remote… [REVERTED przez `c59c53b`]
+- `c59c53b` — Revert (zmiana podejścia na YAML/dane side)
+- `b07a3ab` — fix(remote_mqtt): relocate enrich/strip hooks to manager_integration
+- `bdf32fa` — fix(expander): pass dict (not id string) to is_expander_output
+- `0a72591` — fix(module-registry): also enrich the pre-populated config cache
+- (+ feat(module-registry) commit z hookami + enricherami)
+
+---
+
 ### 2026-06-23 — Session 6 part B (i2c-hardening po migracji)
 
 **Zgłoszenie**: użytkownik — "mcp_left (0x21): [Errno 110] Connection timed out
