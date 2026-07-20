@@ -42,17 +42,27 @@ def _persist_wled_cache_strip(config_file: str) -> None:
         from yaml import SafeLoader, load
 
         class IncludeLoader(SafeLoader):
-            """YAML loader that preserves !include tags."""
+            """YAML loader that preserves !include / !include_files tags."""
 
         def _include_constructor(
-            loader: IncludeLoader, node: object
+            loader: IncludeLoader, node: object, tag: str = "!include"
         ) -> object:
             filename = loader.construct_scalar(node)  # type: ignore[arg-type]
             return type(
-                "Include", (), {"filename": filename, "tag": "!include"}
+                "Include", (), {"filename": filename, "tag": tag}
             )()
 
+        # Register BOTH tags. The expander module writes the ``output:`` section
+        # as ``!include_files`` (board file + EX_* expander files); without a
+        # constructor for it the loader raised "could not determine a
+        # constructor for the tag '!include_files'" and this whole migration
+        # aborted before it could reach remote_devices. Mirror yaml_util's
+        # IncludeLoader so we parse the same configs it does.
         IncludeLoader.add_constructor("!include", _include_constructor)
+        IncludeLoader.add_constructor(
+            "!include_files",
+            lambda loader, node: _include_constructor(loader, node, "!include_files"),
+        )
 
         with open(config_file, encoding="utf-8") as f:
             config = load(f, Loader=IncludeLoader)  # noqa: S506
@@ -65,13 +75,15 @@ def _persist_wled_cache_strip(config_file: str) -> None:
         if rd_section is None:
             return
 
-        # If it's an !include, load the included file
-        if hasattr(rd_section, "tag") and rd_section.tag == "!include":
-            include_path = config_dir / rd_section.filename
-            if include_path.exists():
-                with open(include_path, encoding="utf-8") as f:
-                    rd_list = load(f, Loader=SafeLoader)  # noqa: S506
-                _strip_wled_fields_from_file(include_path, rd_list, config_dir)
+        # If it's an !include / !include_files, load each referenced file.
+        # (!include_files carries a space-separated list of filenames.)
+        if hasattr(rd_section, "tag") and rd_section.tag in ("!include", "!include_files"):
+            for fname in rd_section.filename.split():
+                include_path = config_dir / fname
+                if include_path.exists():
+                    with open(include_path, encoding="utf-8") as f:
+                        rd_list = load(f, Loader=SafeLoader)  # noqa: S506
+                    _strip_wled_fields_from_file(include_path, rd_list, config_dir)
             return
 
         # Inline remote_devices — strip from main config file
