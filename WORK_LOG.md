@@ -188,14 +188,24 @@ Upstream toggluje grupę jako całość (`async_turn_off` = wszystkie OFF). Obja
 + akcja TOGGLE: grupa uznana OFF (bo nie wszystkie ON) → toggle robi turn_on all. Fix
 configowy: `all_on_behaviour: False` (domyślne, any-on) LUB akcja `OFF` zamiast TOGGLE.
 
-**Pending / follow-ups**:
-- OutputForm advancedTabContent: nie zaadoptowano upstreamowego zero-clearing UX na
-  momentary inputs + SettingsToggleGroup dla adjustable_duration (nasze DRY variant,
-  funkcjonalnie kompletne) — kosmetyczny follow-up.
-- Rozważyć adopcję `EditItemDialog` (dodać outputKind/mcp23017 passthrough) dla spójności
-  z BindingMatrix — obecnie nasz inline dialog diverguje.
-- UI manual smoke (do potwierdzenia przez usera): output-group picker pokazuje expander+
-  remote, modbus dropdown /dev/ttyUSB0, OLED żywy, Teach Mode działa.
+**Follow-upy — ZROBIONE (commit `<follow-ups>`)**:
+- ✅ **OutputForm** advancedTabContent: zaadoptowano upstreamowy zero-clearing UX na
+  momentary_turn_on/off + `SettingsToggleGroup` dla adjustable_duration (disabled +
+  conflict warning gdy momentary ustawione).
+- ✅ **EditItemDialog adopcja**: dodano optional `outputKind`+`mcp23017` do EditItemDialog
+  (forward do FormRenderer); ArrayTableWidget przełączony z inline `<Dialog>` na
+  `<EditItemDialog>` (usunięta nasza dywergencja — EditItemDialog ma identyczny
+  boneio_output title); BindingMatrix output-edit wpięty (outputKind via useOutputKind +
+  mcp23017 z formData) → edycja wyjść expandera z macierzy pokazuje pola MCP.
+- ✅ **API picker smoke** (substytut manual UI): GET /api/config → **64 expander outputs
+  wszystkie enriched `boneio_output`** (native filter branch), **5 remote outputs 0×
+  boneio_output** (native `remote_source && device_id` branch) = 69 w pickerze; modbus.uart
+  = `/dev/ttyUSB0`. Deploy + smoke OK.
+
+**Pending (kosmetyczne, do usera)**:
+- Manual UI klik: output-group picker (69 wyjść widoczne), Teach Mode, OLED, BindingMatrix
+  edycja expandera pokazuje MCP fields.
+- Session 6 §Phase D: USB-RS485 upstream PR, itd. (starsze, poza scope).
 
 ---
 
