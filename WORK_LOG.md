@@ -110,6 +110,51 @@ pattern eliminates that.
 
 ## Timeline
 
+### 2026-07-23 — Session 7b (diagnoza „martwych inputów" + journald retention)
+
+**Zgłoszenie**: użytkownik — "wczoraj (2026-07-22, ~21-23) przestały działać przyciski,
+żaden input nie działał, prawdopodobnie kolizja i2c; czy da się napisać kolejkowanie
+komend i2c z priorytetem na inputy/outputy? Martwi mnie że to się dzieje randomowo."
+
+**Diagnoza (read-only, architektura + świeże logi)** — to NIE kolizja i2c:
+- Bus ma `threading.RLock` (`hardware/i2c/bus.py:40`) → software'owo serializuje, kolizji nie ma.
+- **Root cause: blokujące i2c W PĘTLI asyncio.** Sensory (PCT2075/LM75/INA219/MCP9808) i
+  OLED czytają i2c synchronicznie wewnątrz korutyn `async_update`/`render_display`
+  działających w pętli: `BaseSensor.async_update` (`sensor/temperature/base.py:135`) →
+  `self.temperature` (property) → `_read_register` (`pct2075.py:48`) →
+  `with self._i2c:` (blokujący acquire, BEZ timeoutu) → smbus2 `i2c_rdwr` (blokujący,
+  BEZ timeoutu). Gdy bus wisi (errno 110 / clock-stretch / inny wątek trzyma RLock
+  podczas wiszącego zapisu MCP), pętla zamarza na sekundy/∞.
+- Inputy = GPIO libgpiod przez `self._loop.add_reader(fd, ...)` (`gpio/input/manager.py:290`)
+  — detekcja edge'y ŻYJE W TEJ SAMEJ PĘTLI. Zamrożona pętla → `add_reader` nie odpala →
+  zgubione edge'e → martwe przyciski.
+- **Dowód w logach** (Jul 23, po migracji): `GPIO readback: ... no RELEASE event received!
+  → likely missed RISING_EDGE` + `Stale release ... 22745s`. Upstream `b15b5fb` (dostaliśmy
+  w tej migracji) łapie missed RELEASE, ale nie missed PRESS przy pełnym zamrożeniu.
+- Wtórny wektor: wyjścia MCP idą przez `run_in_executor(None)` (basic.py:190) — domyślny
+  executor ma ~5 wątków na 1-CPU BBB; przy wiszącym i2c locku pula się wyczerpuje →
+  akcje inputów nie odpalają nawet jak wykryte.
+
+**Rozwiązanie (zaprojektowane, ODŁOŻONE do następnego incydentu — decyzja usera)**:
+Zdjąć i2c z pętli całkowicie. Dedykowany **wątek-worker i2c** (jedyny właściciel busa)
++ kolejka komend + **timeouty per-operacja** (dziś `with self._i2c` i smbus2 = zero
+timeoutów = „nieskończoność"). Opcjonalny priorytet w kolejce (wyjścia > sensory > OLED),
+ale główny zysk to izolacja+timeouty. To realizuje `modules/i2c_bus/` — patrz
+[[project_expander_permanent]] future workstream. Pliki do ruszenia: `bus.py`,
+`sensor/*/base.py`, `oled.py`, `mcp23017.py`, `pca9685.py`, `ds2482.py`.
+
+**Wykonano teraz**: `inv journald-retention` (nowe zadanie w `tasks.py`) — journald
+`Storage=persistent` + `MaxRetentionSec=1week` + `SystemMaxUse=400M`, drop-in w
+`/etc/systemd/journald.conf.d/boneio-retention.conf`. Powód: domyślny volatile journal
+rotował się po ~10h (ROPAM loguje co 30s), przez co incydent 21-23 wyparował zanim
+mogłem go zobaczyć. Teraz następny epizod będzie w logach do tygodnia wstecz.
+
+**Plan**: czekamy na kolejny incydent z trwałymi logami → potwierdzamy mechanizm
+(errno 110 + który sensor/OLED wisiał + korelacja z missed edges) → wtedy implementujemy
+i2c-worker + timeouty. Bez fixa „na ślepo" na produkcji.
+
+---
+
 ### 2026-07-21 — Session 7 (upstream v1.5.0dev3 → v1.5.0dev17 migration)
 
 **Zgłoszenie**: użytkownik — "BoneIO dodało nowy update. Potrzebujemy podnieść nasz

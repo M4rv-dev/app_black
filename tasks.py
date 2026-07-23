@@ -556,6 +556,46 @@ def status(c):
 
 
 @task(help={
+    "retention": "Max journal retention (default '1week').",
+    "max-use": "Cap total persistent journal size (default '400M').",
+})
+def journald_retention(c, retention="1week", max_use="400M"):
+    """Make journald persistent + set retention so intermittent incidents survive.
+
+    The default volatile (RAM) journal rotates out in ~10h on this device, so a
+    random overnight input/i2c freeze is gone before it can be diagnosed. This
+    writes a drop-in to /etc/systemd/journald.conf.d/, creates /var/log/journal,
+    and restarts journald. Idempotent — safe to re-run.
+    """
+    import base64
+    cfg = _load_config()
+    pw = _get_password(cfg)
+    dropin = (
+        "[Journal]\n"
+        "Storage=persistent\n"
+        f"MaxRetentionSec={retention}\n"
+        f"SystemMaxUse={max_use}\n"
+    )
+    b64 = base64.b64encode(dropin.encode()).decode()
+    remote = (
+        "mkdir -p /etc/systemd/journald.conf.d /var/log/journal && "
+        f"echo '{b64}' | base64 -d > /etc/systemd/journald.conf.d/boneio-retention.conf && "
+        "systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1; "
+        "systemctl restart systemd-journald && "
+        "echo '--- drop-in ---' && cat /etc/systemd/journald.conf.d/boneio-retention.conf && "
+        "echo '--- storage ---' && journalctl --disk-usage && "
+        "echo '--- effective ---' && (systemctl show systemd-journald -p FragmentPath >/dev/null 2>&1; "
+        "grep -hE '^(Storage|MaxRetentionSec|SystemMaxUse)' "
+        "/etc/systemd/journald.conf.d/boneio-retention.conf)"
+    )
+    res = _ssh_sudo(cfg, pw, remote, ctx=c, hide=True)
+    if res.exited != 0:
+        sys.exit(f"!! journald retention config failed:\n{res.stderr or res.stdout}")
+    print(res.stdout)
+    print(f"✓ journald persistent; retention={retention}, cap={max_use}")
+
+
+@task(help={
     "no-install": "Skip copying built assets into boneio/webui/frontend-dist/ (build only).",
 })
 def build_frontend(c, no_install=False):
